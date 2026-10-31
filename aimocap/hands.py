@@ -124,13 +124,86 @@ def reconstruct_hands(cams, hkp, hconf, arm_swaps, body_tri, body_world, body_fi
         H, qh = X[:, i], q[:, i]
         if (qh > 0.15).sum() < 3:
             out[side] = None; out['conf_' + side] = None; continue
-        H, filled = K.fill_gaps(H, qh)
-        H, _ = K.hampel(H)
-        H = K.butter_lowpass(H, fps, cutoff)
+        qh = np.where(np.isfinite(H).all(-1), np.clip(qh / 0.6, 0, 1), 0.0)
+        rel = H - H[:, :1]
+        rel, cq, _ = sanitize_hand(rel, qh, fps)
+        rel = K.butter_lowpass(rel, fps, cutoff)
+        rel[:, 0] = 0
         # attach to the corrected wrist (body corrections move the arm slightly)
-        wr = body_final[:, IDX[side + '_wrist']]
-        H = H + (wr - H[:, 0])[:, None]
-        cq = np.where(filled, 0.0, np.clip(qh / 0.6, 0, 1))
-        out[side] = H
+        out[side] = rel + body_final[:, IDX[side + '_wrist']][:, None]
         out['conf_' + side] = cq
     return out
+
+
+# ------------------------------------------------------------- sanitize --
+CHAINS = [[0, 1, 2, 3, 4], [0, 5, 6, 7, 8], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16], [0, 17, 18, 19, 20]]
+# Adult hand segment lengths (m) per chain: wrist/CMC->MCP, proximal, middle, distal.
+HAND_DEFAULT = [[0.035, 0.040, 0.032, 0.027], [0.090, 0.045, 0.025, 0.020], [0.090, 0.045, 0.028, 0.020],
+                [0.085, 0.042, 0.027, 0.020], [0.080, 0.035, 0.020, 0.018]]
+
+
+def sanitize_hand(R, C, fps, strength=0.5, rng=None):
+    """Remove anatomically impossible finger points (AI-video hands are tiny and the detector
+    often lands on the other hand, the body or the background).
+
+    R (T,21,3) wrist-relative points, C (T,21) confidence 0..1. A point is rejected when its
+    bone length is off the hand's own (robust) length, it is too far from the wrist, it jumps
+    away from its neighbours in time, or the palm itself is malformed. Rejected points get
+    confidence 0 and are re-interpolated from good frames; with confidence 0 the exporter
+    blends that finger to the natural relaxed hand. strength 0..1 tightens the limits.
+    `rng` (a, b) limits the changes to those frames. Returns R, C, fraction rejected."""
+    T = len(R)
+    R = np.array(R, float); C = np.array(C, float)
+    a, b = (0, T - 1) if rng is None else rng
+    inside = np.zeros(T, bool); inside[a:b + 1] = True
+    k = float(np.clip(strength, 0, 1))
+    lo, hi = 0.62 + 0.13 * k, 1.6 - 0.3 * k            # allowed bone length ratio
+    jump = 0.05 - 0.025 * k                            # m, out-and-back jump vs 5-frame median
+    ok = np.isfinite(R).all(-1) & (C > 0.05)
+    Rn = np.where(np.isfinite(R), R, 0.0)
+    bad = ~ok
+    # robust per-hand bone lengths, kept within a plausible range of an adult hand
+    ref = np.array(HAND_DEFAULT)
+    good = ok & (C > 0.5)
+    for ci, ch in enumerate(CHAINS):
+        for j in range(4):
+            p, c = ch[j], ch[j + 1]
+            m = good[:, p] & good[:, c]
+            if m.sum() >= 8:
+                L = np.median(np.linalg.norm(Rn[m, c] - Rn[m, p], axis=-1))
+                ref[ci, j] = np.clip(L, 0.65 * HAND_DEFAULT[ci][j], 1.45 * HAND_DEFAULT[ci][j])
+    # 1) bone lengths along each chain (a bad joint also invalidates everything after it)
+    for ci, ch in enumerate(CHAINS):
+        broken = np.zeros(T, bool)
+        for j in range(4):
+            p, c = ch[j], ch[j + 1]
+            r = np.linalg.norm(Rn[:, c] - Rn[:, p], axis=-1) / ref[ci, j]
+            broken |= (r < lo) | (r > hi) | bad[:, c]
+            bad[:, c] |= broken
+    # 2) reach: nothing further from the wrist than a stretched hand
+    reach = ref[2].sum() * 1.25
+    bad |= np.linalg.norm(Rn, axis=-1) > reach
+    # 3) palm shape: index/pinky MCPs must span a sane width and angle
+    w = np.linalg.norm(Rn[:, 5] - Rn[:, 17], axis=-1)
+    v1, v2 = Rn[:, 5], Rn[:, 17]
+    ang = np.degrees(np.arccos(np.clip((v1 * v2).sum(-1) / (np.linalg.norm(v1, axis=-1) * np.linalg.norm(v2, axis=-1) + 1e-9), -1, 1)))
+    palm_bad = (w < 0.025) | (w > 0.13) | (ang < 8) | (ang > 70) | bad[:, [5, 9, 17]].any(1)
+    bad |= palm_bad[:, None]
+    # 4) temporal glitches
+    if T > 6:
+        from scipy.ndimage import median_filter
+        med = median_filter(Rn, size=(5, 1, 1), mode='nearest')
+        bad |= np.linalg.norm(Rn - med, axis=-1) > jump
+    bad[:, 0] = False
+    bad &= inside[:, None]
+    C2 = np.where(bad, 0.0, C)
+    # re-interpolate rejected points from good frames (inside the range only)
+    R2, filled = K.fill_gaps(Rn, np.where(bad | ~ok, 0.0, 1.0), qmin=0.5)
+    R2 = np.where(inside[:, None, None], R2, Rn)
+    R2[:, 0] = 0
+    # still-unknown points (no good frame at all): park them on the relaxed default hand
+    nogood = ~(np.isfinite(R2).all(-1))
+    if nogood.any():
+        R2 = np.where(nogood[..., None], 0.0, R2)
+    C2 = np.where(filled & inside[:, None], np.minimum(C2, 0.0), C2)
+    return R2, C2, float(bad[inside].mean()) if inside.any() else 0.0

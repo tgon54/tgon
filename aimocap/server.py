@@ -247,6 +247,36 @@ def clean_preview(jid, body):
     return d
 
 
+_SKIP = re.compile(r'^(root|ik_.*|attach|interaction|center_of_mass|.*twist.*)$')
+
+
+def rig_preview(jid, body):
+    """Bone positions of the chosen mannequin exactly as exported (solver output, finger limits,
+    relaxed fallback), mapped back to the viewer's space (meters, Y-up)."""
+    from .timeline import load, apply_edits
+    from .rig import load_rig
+    from .retarget import retarget
+    c = apply_edits(load(_out(jid)), body.get('edits', []))
+    tid = body.get('target', 'ue4')
+    rig = load_rig(tid)
+    res = retarget(c['P'], c['fps'], rig, hands=c.get('hands'), contacts=c['contacts'])
+    names = [b['name'] for b in rig['bones'] if b['kind'] != 'Null' and not _SKIP.match(b['name'])]
+    keep = set(names)
+    par = {b['name']: b['parent'] for b in rig['bones']}
+    links = []
+    for n in names:
+        p = par[n]
+        while p is not None and p not in keep:
+            p = par[p]
+        if p is not None:
+            links.append([names.index(p), names.index(n)])
+    X = np.stack([res['globals'][n][:, :3, 3] for n in names], 1)          # (T,B,3) rig units
+    X = (X / res['scale']) @ res['basis']                                  # back to mocap space
+    tips = [names.index(n) for n in names if re.match(r'^(thumb|index|middle|ring|pinky)_03_[lr]$', n)]
+    return dict(target=tid, names=names, links=links, tips=tips, pos=np.round(X, 4).tolist(),
+                fingers=res['info']['hands'])
+
+
 def clean_export(jid, body):
     from .timeline import save_clean
     from .rig import list_targets
@@ -391,11 +421,11 @@ class H(BaseHTTPRequestHandler):
                     return self._err(str(e))
             if p == '/api/jobs':
                 return self._send(200, {'id': start_job(self._body())})
-            m = re.match(r'^/api/jobs/([\w-]+)/(clean|export)$', p)
+            m = re.match(r'^/api/jobs/([\w-]+)/(clean|export|rig_preview)$', p)
             if m:
                 if m.group(1) in RUNNING:
                     raise ValueError('job is still running')
-                fn = clean_preview if m.group(2) == 'clean' else clean_export
+                fn = {'clean': clean_preview, 'export': clean_export, 'rig_preview': rig_preview}[m.group(2)]
                 return self._send(200, fn(m.group(1), self._body()))
             if p == '/api/import_motion':
                 n = int(self.headers.get('Content-Length') or 0)

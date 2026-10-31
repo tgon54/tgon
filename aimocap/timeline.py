@@ -9,6 +9,7 @@ Edit ops:
   hold        {start,end}            freeze the pose of `start`
   foot_lock   {start,end}            pin planted feet (removes sliding) inside the range
   relax_hands {start,end,side}       ignore hand tracking -> natural relaxed fingers
+  fix_hands   {start,end,strength}   reject impossible finger points (bad lengths, jumps, broken palm)
   auto_clean  {strength}             interpolate detected spikes + smooth jitter everywhere
   trim        {start,end}            keep only [start, end]
   loop        {frames}               cross-fade the end into the start for a seamless cycle
@@ -23,7 +24,7 @@ from scipy.ndimage import median_filter
 from . import correct as K
 from .skeleton import IDX, FOOT
 
-OPS = ('interpolate', 'smooth', 'hold', 'foot_lock', 'relax_hands', 'auto_clean', 'trim', 'loop')
+OPS = ('interpolate', 'smooth', 'hold', 'foot_lock', 'relax_hands', 'fix_hands', 'auto_clean', 'trim', 'loop')
 ISSUE_TYPES = ('spike', 'jitter', 'low_quality', 'foot_skate', 'hand_lost')
 
 
@@ -164,6 +165,13 @@ def _hand_rel(m):
     return out
 
 
+def _fix_hands(H, fps, a, b, strength):
+    from .hands import sanitize_hand
+    for s in ('left', 'right'):
+        if H and H.get(s) is not None and H.get('conf_' + s) is not None:
+            H[s], H['conf_' + s], _ = sanitize_hand(H[s], H['conf_' + s], fps, strength, (a, b))
+
+
 def apply_edits(m, edits):
     """Returns a new motion dict with the edit list applied."""
     P = m['P'].copy()
@@ -196,6 +204,7 @@ def apply_edits(m, edits):
                     P = _smooth(P, fps, sgm['start'], sgm['end'], 0.3 + 0.6 * st)
                     touched[sgm['start']:sgm['end'] + 1] = True
             P = _smooth(P, fps, 0, T - 1, 0.15 * st)
+            _fix_hands(H, fps, 0, T - 1, st)
             continue
         a, b = _rng(e, T)
         if op == 'interpolate':
@@ -219,6 +228,8 @@ def apply_edits(m, edits):
             for k in cont:
                 sub[k][a:b + 1] = cont[k][a:b + 1]
             P, _ = K.fix_foot_skating(P, sub)
+        elif op == 'fix_hands':
+            _fix_hands(H, fps, a, b, float(e.get('strength', 0.5)))
         elif op == 'relax_hands':
             side = e.get('side', 'both')
             for s in ('left', 'right'):

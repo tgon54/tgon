@@ -56,7 +56,8 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:6px 10px
   <main>
     <div id="view"><canvas id="c3d"></canvas>
       <div class="hud" id="hud"></div>
-      <div class="vopts"><button class="btn sm on" id="optGhost" title="Show original motion as a ghost">Ghost</button>
+      <div class="vopts"><select id="rigSel" title="Mannequin type shown in the preview (what gets exported)"><option value="">Points (raw tracking)</option></select>
+        <button class="btn sm on" id="optGhost" title="Show original motion as a ghost">Ghost</button>
         <button class="btn sm on" id="optFollow">Follow</button><button class="btn sm" id="optFront">Front</button><button class="btn sm" id="optSide">Side</button></div>
     </div>
     <aside>
@@ -71,6 +72,8 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:6px 10px
       </div>
       <div class="card"><h3>Auto</h3>
         <div class="row"><button class="btn pri" id="autoBtn">Auto-clean</button><input type="range" id="autoS" min="0" max="1" step="0.05" value="0.5"><span id="autoV">0.50</span></div>
+        <div class="row"><button class="btn pri" id="fixHandsBtn" title="Reject impossible finger points (selection or whole clip); unsure fingers relax naturally">✋ Fix fingers</button>
+          <input type="range" id="fhS" min="0" max="1" step="0.05" value="0.5"><span id="fhV">0.50</span></div>
         <div class="row"><button class="btn" id="loopBtn">Loop blend</button><input type="number" id="loopN" min="2" max="60" value="10" style="width:60px"> frames</div>
         <div class="hint">Auto-clean removes detected spikes (AI glitches) and smooths jitter. Edits are non-destructive.</div>
       </div>
@@ -113,7 +116,7 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:6px 10px
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const ISS={spike:['Spike / glitch','#f06a6a','interpolate'],jitter:['Jitter','#f0b14a','smooth'],low_quality:['Low tracking quality','#e3d35a','smooth'],
   foot_skate:['Foot skating','#b77dff','foot_lock'],hand_lost:['Hand tracking lost','#4fb8ff','relax_hands']};
-const OPC={interpolate:'#f06a6a',smooth:'#f0b14a',hold:'#9aa6b2',foot_lock:'#b77dff',relax_hands:'#4fb8ff',auto_clean:'#2ed3c6',trim:'#5ad08a',loop:'#5ad08a'};
+const OPC={fix_hands:'#7fe0ff',interpolate:'#f06a6a',smooth:'#f0b14a',hold:'#9aa6b2',foot_lock:'#b77dff',relax_hands:'#4fb8ff',auto_clean:'#2ed3c6',trim:'#5ad08a',loop:'#5ad08a'};
 const FING=[[0,1,2,3,4],[0,5,6,7,8],[0,9,10,11,12],[0,13,14,15,16],[0,17,18,19,20],[5,9,13,17]];
 let S={id:null,orig:null,clean:null,edits:[],undo:[],redo:[],f:0,sel:null,play:false,selEdit:-1,trim:null,curve:'right_wrist'};
 let cam={yaw:0.6,pitch:0.25,dist:4.2,cx:0,cy:0.9,cz:0}, opt={ghost:true,follow:true};
@@ -138,7 +141,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','
 async function load(id){
   try{
     const d=await api(`/api/jobs/${id}/motion`);
-    S={...S,id,orig:d,clean:null,undo:[],redo:[],f:0,sel:null,selEdit:-1,trim:null};
+    S={...S,id,orig:d,clean:null,rig:null,undo:[],redo:[],f:0,sel:null,selEdit:-1,trim:null};
     const saved=localStorage.getItem('aimocap-edits-'+id);
     S.edits=saved?JSON.parse(saved):(d.edits||[]);
     $('#jname').textContent=d.name;const nm=(d.name||'').replace(/\.[^.]+$/,'').replace(/[^\w-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40);
@@ -158,8 +161,16 @@ async function refresh(){
   try{const c=await post(`/api/jobs/${S.id}/clean`,{edits:S.edits});if(my!==pend)return;S.clean=c;S.trim=c.trim}
   catch(e){toast('Preview failed: '+e.message)}
   finally{if(my===pend)document.body.classList.remove('busy')}
-  renderIssues();drawTL();draw3d();
+  renderIssues();drawTL();draw3d();loadRig();
 }
+let rigPend=null;
+async function loadRig(){
+  const t=$('#rigSel').value;if(!t||!S.id){S.rig=null;draw3d();return}
+  const my=rigPend={};
+  try{const r=await post(`/api/jobs/${S.id}/rig_preview`,{edits:S.edits,target:t});if(my===rigPend){S.rig=r;draw3d()}}
+  catch(e){if(my===rigPend){S.rig=null;toast('Mannequin preview: '+e.message);draw3d()}}
+}
+$('#rigSel').onchange=()=>{localStorage.setItem('aimocap-rig',$('#rigSel').value);loadRig()};
 function pushEdit(e){S.undo.push(JSON.stringify(S.edits));S.redo=[];S.edits=[...S.edits,e];refresh()}
 function setEdits(list){S.undo.push(JSON.stringify(S.edits));S.redo=[];S.edits=list;refresh()}
 $('#undo').onclick=()=>{if(!S.undo.length)return;S.redo.push(JSON.stringify(S.edits));S.edits=JSON.parse(S.undo.pop());refresh()};
@@ -168,7 +179,7 @@ $('#reset').onclick=()=>{if(S.edits.length&&confirm('Remove all edits?'))setEdit
 
 // ------------------------------------------------------------------ edits
 function opLabel(e){const r=e.start!=null?` ${e.start}–${e.end}`:'';
-  return {interpolate:'Fix glitch',smooth:`Smooth ${(+e.strength).toFixed(2)}`,hold:'Hold pose',foot_lock:'Foot lock',relax_hands:`Relax hands (${e.side})`,
+  return {interpolate:'Fix glitch',smooth:`Smooth ${(+e.strength).toFixed(2)}`,hold:'Hold pose',foot_lock:'Foot lock',relax_hands:`Relax hands (${e.side})`,fix_hands:`Fix fingers ${(+e.strength).toFixed(2)}`,
     auto_clean:`Auto-clean ${(+e.strength).toFixed(2)}`,trim:'Trim',loop:`Loop blend ${e.frames}f`}[e.op]+r}
 function renderEdits(){
   $('#edits').innerHTML=S.edits.length?S.edits.map((e,i)=>`<div class="item ${i===S.selEdit?'sel':''}" data-i="${i}"><span class="dot" style="background:${OPC[e.op]}"></span><span class="t">${opLabel(e)}</span><span class="x" data-x="${i}">✕</span></div>`).join('')
@@ -186,6 +197,8 @@ $$('[data-op]').forEach(b=>b.onclick=()=>{const s=needSel();if(!s)return;const e
 $('#smoothS').oninput=()=>$('#smoothV').textContent=(+$('#smoothS').value).toFixed(2);
 $('#autoS').oninput=()=>$('#autoV').textContent=(+$('#autoS').value).toFixed(2);
 $('#autoBtn').onclick=()=>setEdits([{op:'auto_clean',strength:+$('#autoS').value},...S.edits.filter(e=>e.op!=='auto_clean')]);
+$('#fhS').oninput=()=>$('#fhV').textContent=(+$('#fhS').value).toFixed(2);
+$('#fixHandsBtn').onclick=()=>{const r=S.sel||[0,T()-1];pushEdit({op:'fix_hands',start:r[0],end:r[1],strength:+$('#fhS').value})};
 $('#loopBtn').onclick=()=>setEdits([...S.edits.filter(e=>e.op!=='loop'),{op:'loop',frames:+$('#loopN').value}]);
 $('#clearSel').onclick=()=>{S.sel=null;updSel();drawTL()};
 function updSel(){$('#selInfo').innerHTML=S.sel?`Frames <b>${S.sel[0]}–${S.sel[1]}</b> &nbsp;(${S.sel[1]-S.sel[0]+1} f, ${((S.sel[1]-S.sel[0]+1)/S.orig.fps).toFixed(2)} s)`:'<span class="hint">Drag on the timeline to select frames</span>'}
@@ -230,7 +243,15 @@ function boneCol(a,b){const s=a+b;return s.includes('left')?'#ff9a3c':s.includes
 function drawSkel(P,alpha,w){g.globalAlpha=alpha;for(const [a,b] of S.orig.bones)line(P[J(a)],P[J(b)],boneCol(a,b),w);
   for(const p of P){const A=proj(p);if(A){g.fillStyle='#e6edf4';g.beginPath();g.arc(A[0],A[1],w*0.9,0,7);g.fill()}}g.globalAlpha=1}
 function drawHand(H,conf,col){if(!H)return;for(const ch of FING)for(let k=1;k<ch.length;k++){
-  const c=conf?Math.min(conf[ch[k]],conf[ch[k-1]]):1;g.globalAlpha=0.35+0.65*Math.min(1,c/0.5);line(H[ch[k-1]],H[ch[k]],col,1.6)}g.globalAlpha=1}
+  const c=conf?Math.min(conf[ch[k]],conf[ch[k-1]]):1;if(c<0.3)continue;g.globalAlpha=0.4+0.6*Math.min(1,c/0.6);line(H[ch[k-1]],H[ch[k]],col,1.6)}g.globalAlpha=1}
+function rigCol(n){return /_l$/.test(n)?'#ff9a3c':/_r$/.test(n)?'#4f8cff':'#d9e2ec'}
+function drawRig(R,X){
+  for(const [a,b] of R.links){const n=R.names[b],fin=/^(thumb|index|middle|ring|pinky)/.test(n)||/metacarpal/.test(n);
+    line(X[a],X[b],fin?(/_l$/.test(n)?'#ffc48a':'#9cc0ff'):rigCol(n),fin?1.6:3.2)}
+  for(const t of R.tips){const l=R.links.find(k=>k[1]===t);if(!l)continue;const p=X[l[0]],c=X[t];
+    line(c,[c[0]+(c[0]-p[0])*0.8,c[1]+(c[1]-p[1])*0.8,c[2]+(c[2]-p[2])*0.8],/_l$/.test(R.names[t])?'#ffc48a':'#9cc0ff',1.6)}
+  for(const p of X){const A=proj(p);if(A){g.fillStyle='#e6edf4';g.beginPath();g.arc(A[0],A[1],1.6,0,7);g.fill()}}
+}
 function draw3d(){
   const r=cv.getBoundingClientRect(),dpr=devicePixelRatio||1;if(cv.width!==Math.round(r.width*dpr)||cv.height!==Math.round(r.height*dpr)){cv.width=Math.round(r.width*dpr);cv.height=Math.round(r.height*dpr)}
   g.clearRect(0,0,cv.width,cv.height);if(!S.orig)return;
@@ -241,12 +262,15 @@ function draw3d(){
   if(opt.ghost||!pose)drawSkel(orig,pose?0.22:0.55,2);
   if(pose){
     for(const s of ['left','right'])if(pose.contacts[s]){const ft=pose.P[J(s+'_heel')],A=proj([ft[0],0,ft[2]]);if(A){g.fillStyle='rgba(90,208,138,.35)';g.beginPath();g.ellipse(A[0],A[1],14,5,0,0,7);g.fill()}}
-    drawSkel(pose.P,1,3);
-    if(pose.hands){drawHand(pose.hands.left,pose.hands.cl,'#ffc48a');drawHand(pose.hands.right,pose.hands.cr,'#9cc0ff')}
+    const ri=f-(S.trim?S.trim[0]:0);
+    if(S.rig&&S.rig.pos[ri])drawRig(S.rig,S.rig.pos[ri]);
+    else{drawSkel(pose.P,1,3);
+      if(pose.hands){drawHand(pose.hands.left,pose.hands.cl,'#ffc48a');drawHand(pose.hands.right,pose.hands.cr,'#9cc0ff')}}
   }
   const hc=S.clean&&S.clean.hands;
   $('#hud').innerHTML=`<b>${pose?'Cleaned':'Trimmed out'}</b> · frame ${f} · ${(f/S.orig.fps).toFixed(2)} s`+(opt.ghost&&pose?' · <span style="opacity:.6">ghost = original</span>':'')
-    +(hc?` · hands: ${hc.left?'L':'–'}${hc.right?'R':'–'}`:' · hands: relaxed (no tracking data)');
+    +(hc?` · hands: ${hc.left?'L':'–'}${hc.right?'R':'–'}`:' · hands: relaxed (no tracking data)')
+    +(S.rig?` · <b>${esc($('#rigSel').selectedOptions[0].textContent)}</b> (as exported)`:'');
   $('#frInfo').textContent=`${f} / ${T()-1}   ${(f/S.orig.fps).toFixed(2)} s`+(S.trim?`   out: ${S.trim[1]-S.trim[0]+1} f`:'');
 }
 let drag=null;
@@ -321,6 +345,9 @@ window.onresize=()=>{drawTL();draw3d()};
 async function loadTargets(){
   const keep=new Set($$('#targets input:checked').map(i=>i.value));
   try{const r=await api('/api/targets');
+    const cur=$('#rigSel').value||localStorage.getItem('aimocap-rig')||'ue4';
+    $('#rigSel').innerHTML='<option value="">Points (raw tracking)</option>'+r.targets.filter(t=>t.ok).map(t=>`<option value="${esc(t.id)}">${esc(t.label)}</option>`).join('');
+    $('#rigSel').value=[...$('#rigSel').options].some(o=>o.value===cur)?cur:'ue4';loadRig();
     $('#targets').innerHTML=r.targets.map(t=>`<div class="row"><label title="${esc(t.error||t.source)}" style="${t.ok?'':'opacity:.5'}"><input type="checkbox" value="${esc(t.id)}" ${!t.ok?'disabled':(keep.size?keep.has(t.id):t.id==='ue4')?'checked':''}> ${esc(t.label)} <span class="hint">${t.source==='bundled'?'':esc(t.source)}${t.ok?'':' — '+esc(t.error)}</span></label></div>`).join('')
       +`<div class="hint">Drop more skeletons (.fbx, UE bone names) into <span style="word-break:break-all">${esc(r.folder)}</span></div>`}
   catch(e){toast(e.message)}}
