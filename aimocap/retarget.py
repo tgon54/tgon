@@ -174,9 +174,120 @@ def _body_frames(V, up, left):
     return F
 
 
+CLAVICLE_MAX, CLAVICLE_GAIN = 20.0, 0.6
+ARM_TWIST_MAX, LEG_TWIST_MAX = 80.0, 40.0     # deg, humerus / femur axial rotation
+
+
+def _neutralized(Fp, F0p, Fc, fps, max_deg, gain):
+    """Child frame relative to parent with its clip-average as neutral; deviation scaled,
+    limited and smoothed. Returns (live frame, rest frame)."""
+    rel = np.swapaxes(Fp, -1, -2) @ Fc
+    rn = Rotation.from_matrix(rel).mean().as_matrix()
+    dev = Rotation.from_matrix(rn.T @ rel).as_rotvec() * gain
+    a = np.linalg.norm(dev, axis=-1, keepdims=True)
+    lim = np.radians(max_deg)
+    dev = _lowpass(np.where(a > lim, dev * lim / np.maximum(a, 1e-9), dev), fps, 6.0)
+    return Fp @ rn @ Rotation.from_rotvec(dev).as_matrix(), F0p @ rn
+
+
+def _despike(P, thr=0.045):
+    """Out-and-back keypoint glitches (a joint leaps away for 1-3 frames) -> 7-frame median,
+    feathered into the clean signal. Real motion is preserved (median follows it)."""
+    if len(P) < 9:
+        return P
+    from scipy.ndimage import median_filter
+    M = median_filter(P, size=(7, 1, 1), mode='nearest')
+    d = np.linalg.norm(P - M, axis=-1)
+    w = np.clip((d - thr) / thr, 0, 1)
+    w = np.maximum(w, median_filter(w, size=(3, 1), mode='nearest'))
+    return P * (1 - w[..., None]) + M * w[..., None]
+
+
+def _limb_secondary(Dpar, d, d0, s0, hinge, fps, lim_deg):
+    """Twist-stable secondary axis for a limb segment.
+    Reference = rest secondary carried by the parent delta and the minimal swing from the rest
+    direction (never degenerate, unlike a cross product with a fixed axis). The elbow/knee
+    hinge only adds a twist about the bone, weighted by how bent the joint is, limited to the
+    anatomical range and smoothed -> no 180 deg flips when the limb straightens."""
+    T = len(d)
+    dn = _n(d)
+    d0n = _n(d0)
+    s0n = _n(s0 - (s0 @ d0n) * d0n)
+    dl = np.einsum('tji,tj->ti', Dpar, dn)                      # direction in parent-rest space
+    Rs = _swing(np.broadcast_to(d0n, (T, 3)), dl)
+    ref = np.einsum('tij,tjk,k->ti', Dpar, Rs, s0n)
+    ref = _n(ref - (ref * dn).sum(-1, keepdims=True) * dn)
+    hn = hinge - (hinge * dn).sum(-1, keepdims=True) * dn
+    bend = np.linalg.norm(hinge, axis=-1)
+    hn = _n(hn)
+    ang = np.arctan2((np.cross(ref, hn) * dn).sum(-1), (ref * hn).sum(-1))
+    w = np.clip((bend - 0.15) / 0.35, 0, 1)                      # sin(bend angle): 9..30 deg
+    w = np.where(np.abs(ang) > np.pi / 2, 0.0, w)                # bends backward: axis unreliable
+    w = _lowpass(w, fps, 3.0).clip(0, 1)
+    ang = _lowpass(np.clip(ang, -np.radians(lim_deg), np.radians(lim_deg)) * w, fps, 5.0)
+    c, s = np.cos(ang)[:, None], np.sin(ang)[:, None]
+    return c * ref + s * np.cross(dn, ref)
+
+
+WRIST_MAX = 70.0
+HINGE_RANGE = (0.0, 150.0)   # deg, knee/elbow flexion
+
+
+def _hinge_child(dp, dc, sec, sign):
+    """Knee/elbow as a true 1-DOF hinge about `sec`: child direction = parent rotated by the
+    flexion angle. Backward bends (AI depth errors) are reflected, range clamped."""
+    x = _n(dp)
+    y = sign * np.cross(sec, x)                                  # direction of normal flexion
+    a = np.abs(np.arctan2((dc * y).sum(-1), (dc * x).sum(-1)))
+    a = np.clip(a, *np.radians(HINGE_RANGE))[:, None]
+    return np.cos(a) * x + np.sin(a) * y
+
+
+def _stable_limbs(F, F0, V, V0, Dc, Dp, fps):
+    """Rebuild arm/leg/foot frames (live and rest) with `_limb_secondary`."""
+    def hinge(a, b, c, sign):
+        u, v = _n(b - a), _n(c - b)
+        return np.cross(u, v) * sign                             # |.| = sin(bend)
+    up0 = _n(V0['neck'] - V0['hip'])[0]
+    sh0 = (V0['lsh'] - V0['rsh'])[0]
+    fwd0 = _n(np.cross(sh0, (V0['neck'] - V0['spine'])[0]))
+    pel0 = (V0['lhip'] - V0['rhip'])[0]
+    for k, sh, el, wr, sign in (('l', 'lsh', 'lel', 'lwr', -1.0), ('r', 'rsh', 'rel', 'rwr', 1.0)):
+        d0u = (V0[el] - V0[sh])[0]
+        s0 = np.cross(fwd0, d0u) * (1.0 if k == 'l' else -1.0)
+        sec = _limb_secondary(Dc, V[el] - V[sh], d0u, s0, hinge(V[sh], V[el], V[wr], sign), fps, ARM_TWIST_MAX)
+        F['upperarm_' + k] = _frame(V[el] - V[sh], sec)
+        F['lowerarm_' + k] = _frame(_hinge_child(V[el] - V[sh], V[wr] - V[el], sec, sign), sec)
+        F0['upperarm_' + k] = _frame(d0u[None], s0[None])
+        F0['lowerarm_' + k] = _frame((V0[wr] - V0[el]), s0[None])
+    for k, hp, kn, an, to in (('l', 'lhip', 'lkn', 'lan', 'lto'), ('r', 'rhip', 'rkn', 'ran', 'rto')):
+        d0t = (V0[kn] - V0[hp])[0]
+        sec = _limb_secondary(Dp, V[kn] - V[hp], d0t, pel0, hinge(V[hp], V[kn], V[an], 1.0), fps, LEG_TWIST_MAX)
+        F['thigh_' + k] = _frame(V[kn] - V[hp], sec)
+        shank = _hinge_child(V[kn] - V[hp], V[an] - V[kn], sec, 1.0)
+        F['calf_' + k] = _frame(shank, sec)
+        if k + 'foot_angles' in V:                                  # same ankle angles, corrected shank
+            y, p, _ = V[k + 'foot_angles']
+            fwd = _n(np.cross(V['lhip'] - V['rhip'], V['neck'] - V['hip']))
+            toe = _foot_dir(_n(shank), fwd, y, p)
+        else:
+            toe = V[to] - V[an]
+        F['foot_' + k] = _frame(toe, sec)
+        F0['thigh_' + k] = _frame(d0t[None], pel0[None])
+        F0['calf_' + k] = _frame(V0[an] - V0[kn], pel0[None])
+        F0['foot_' + k] = _frame(V0[to] - V0[an], pel0[None])
+
+
 NECK_MAX = 45.0             # deg, head motion around its neutral relative to the chest
 FOOT_YAW_MAX = 30.0          # deg, ankle/subtalar rotation of the foot around the shank
 FOOT_PITCH_RANGE = (-25.0, 45.0)   # deg around the clip's neutral (dorsi-, plantarflexion)
+
+
+def _foot_dir(n, fwd, y, p):
+    """Toe direction from ankle yaw/pitch relative to the shank `n` (pointing down)."""
+    f = _n(fwd - (fwd * n).sum(-1, keepdims=True) * n)
+    l = np.cross(n, f)
+    return np.cos(p) * (np.cos(y) * f + np.sin(y) * l) + np.sin(p) * n
 
 
 def _fix_feet(V, fps):
@@ -208,8 +319,8 @@ def _fix_feet(V, fps):
         pitch = np.clip(pitch, neutral + FOOT_PITCH_RANGE[0], neutral + FOOT_PITCH_RANGE[1])
         yaw, pitch = _lowpass(yaw, fps, 5.0), _lowpass(pitch, fps, 5.0)
         y, p = np.radians(yaw)[:, None], np.radians(pitch)[:, None]
-        dd = np.cos(p) * (np.cos(y) * f + np.sin(y) * l) + np.sin(p) * n
-        V[k + 'to'] = an + Lm * dd
+        V[k + 'foot_angles'] = (y, p, Lm)                       # reused with the hinge-corrected shank
+        V[k + 'to'] = an + Lm * _foot_dir(n, fwd_p, y, p)
 
 
 def _euler_continuous(R):
@@ -253,7 +364,7 @@ def retarget(P, fps, rig, hands=None, contacts=None, root_motion=False, smooth_h
                         + np.linalg.norm(P[:, IDX['left_ankle']] - P[:, IDX['left_knee']], axis=-1))
     legr = np.linalg.norm(pos0['calf_l'] - pos0['thigh_l']) + np.linalg.norm(pos0['foot_l'] - pos0['calf_l'])
     scale = legr / legm
-    X = (P @ B.T) * scale
+    X = (_despike(P) @ B.T) * scale
 
     V = _points(X)
     _fix_feet(V, fps)
@@ -263,17 +374,6 @@ def retarget(P, fps, rig, hands=None, contacts=None, root_motion=False, smooth_h
     F0 = _body_frames(V0, u_r[None], l_r[None])
     F0['head'] = _frame(u_r[None], l_r[None])
 
-    # neutral foot pitch: AI feet are toe-tip based, rig feet are ball based -> calibrate on contact frames
-    for s, k in (('left', 'l'), ('right', 'r')):
-        d = _n(V[k + 'to'] - V[k + 'an'])
-        sel = contacts[s].astype(bool) if contacts is not None and contacts[s].any() else \
-            V[k + 'an'] @ u_r <= np.percentile(V[k + 'an'] @ u_r, 30)
-        pitch_m = np.median(np.arcsin(np.clip(d[sel] @ u_r, -1, 1)))
-        d0 = _n(V0[k + 'to'] - V0[k + 'an'])[0]
-        pitch_r = np.arcsin(np.clip(d0 @ u_r, -1, 1))
-        ax = _n(np.cross(d0, u_r))
-        Radj = Rotation.from_rotvec(ax * (pitch_m - pitch_r)).as_matrix()
-        F0['foot_' + k] = Radj @ F0['foot_' + k]
 
     # neutral head = the clip's average head pose relative to the chest (AI face keypoints
     # have no reliable absolute 'level'); motion around it is kept
@@ -286,6 +386,26 @@ def retarget(P, fps, rig, hands=None, contacts=None, root_motion=False, smooth_h
     dev = _lowpass(dev, fps, 6.0)
     F['head'] = F['chest'] @ rn @ Rotation.from_rotvec(dev).as_matrix()
     F0['head'] = F0['chest'] @ rn
+
+    # clavicles: AI shoulder points sit off the rig's clavicle line (constant ~30 deg offset that
+    # dropped the shoulders) -> neutral = clip average vs chest, keep a damped, limited shrug
+    for k in ('clavicle_l', 'clavicle_r'):
+        F[k], F0[k] = _neutralized(F['chest'], F0['chest'], F[k], fps, CLAVICLE_MAX, CLAVICLE_GAIN)
+    Dc = F['chest'] @ np.swapaxes(F0['chest'], -1, -2)
+    Dp = F['pelvis'] @ np.swapaxes(F0['pelvis'], -1, -2)
+    _stable_limbs(F, F0, V, V0, Dc, Dp, fps)
+
+    # neutral foot pitch: AI feet are toe-tip based, rig feet are ball based -> calibrate on contact frames
+    for s, k in (('left', 'l'), ('right', 'r')):
+        d = _n(V[k + 'to'] - V[k + 'an'])
+        sel = contacts[s].astype(bool) if contacts is not None and contacts[s].any() else \
+            V[k + 'an'] @ u_r <= np.percentile(V[k + 'an'] @ u_r, 30)
+        pitch_m = np.median(np.arcsin(np.clip(d[sel] @ u_r, -1, 1)))
+        d0 = _n(V0[k + 'to'] - V0[k + 'an'])[0]
+        pitch_r = np.arcsin(np.clip(d0 @ u_r, -1, 1))
+        ax = _n(np.cross(d0, u_r))
+        Radj = Rotation.from_rotvec(ax * (pitch_m - pitch_r)).as_matrix()
+        F0['foot_' + k] = Radj @ F0['foot_' + k]
 
     D = {k: F[k] @ np.swapaxes(F0[k], -1, -2) for k in F}        # global delta rotations (T,3,3)
     Rg = {}                                                       # driven global rotations
@@ -320,13 +440,14 @@ def retarget(P, fps, rig, hands=None, contacts=None, root_motion=False, smooth_h
             Hn = np.where(ok[..., None], H, 0)
             Fp = _frame(Hn[:, 9] - Hn[:, 0], Hn[:, 5] - Hn[:, 17])
             Fp0 = _frame((pos0[f_mcp[1][0]] - pos0['hand_' + k])[None], (pos0[f_mcp[0][0]] - pos0[f_mcp[2][0]])[None])
-            Dpalm = Fp @ np.swapaxes(Fp0, -1, -2)
-            Dpalm = np.where((w_palm > 0)[:, None, None], Dpalm, Dfore)
-            Dhand = _slerp(Dfore, Dpalm, w_palm)
-            Dhand = _limit(Dhand @ np.swapaxes(Dfore, -1, -2), 85) @ Dfore     # wrist range of motion
+            rel = Fp @ np.swapaxes(Fp0, -1, -2) @ np.swapaxes(Dfore, -1, -2)   # wrist motion vs forearm
+            rv = Rotation.from_matrix(rel).as_rotvec()
+            a = np.linalg.norm(rv, axis=-1, keepdims=True)
+            lim = np.radians(WRIST_MAX)
+            rv = np.where(a > lim, rv * lim / np.maximum(a, 1e-9), rv) * w_palm[:, None]
             if smooth_hands:
-                rv = Rotation.from_matrix(Dhand @ np.swapaxes(Dfore, -1, -2)).as_rotvec()
-                Dhand = Rotation.from_rotvec(_lowpass(rv, fps, 8.0)).as_matrix() @ Dfore
+                rv = _lowpass(rv, fps, 4.0)
+            Dhand = Rotation.from_rotvec(rv).as_matrix() @ Dfore
         put('hand_' + k, Dhand)
         # half the wrist twist goes into the forearm twist bone (avoids candy-wrapping)
         tw = 'lowerarm_twist_01_' + k
