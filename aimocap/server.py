@@ -157,17 +157,21 @@ def run_job(jid, cancel):
         s = job['settings']
         src = s.get('reuse_from')
         if src:
-            c = os.path.join(JOBS, src, 'out', 'detections_2d.npz')
-            if os.path.exists(c):
-                shutil.copy(c, os.path.join(out, 'detections_2d.npz'))
+            for nm in ('detections_2d.npz', 'detections_mono.npz'):
+                c = os.path.join(JOBS, src, 'out', nm)
+                if os.path.exists(c):
+                    shutil.copy(c, os.path.join(out, nm))
                 if os.path.exists(os.path.join(JOBS, src, 'out', 'debug_2d_overlay.mp4')):
                     shutil.copy(os.path.join(JOBS, src, 'out', 'debug_2d_overlay.mp4'), out)
         opts = dict(height=float(s['height']), fov=float(s['fov']), cutoff=float(s['cutoff']))
+        if s.get('weight'):
+            opts['weight'] = float(s['weight'])
         if s.get('yaws'):
             opts['yaws'] = [float(v) for v in s['yaws']]
         log('بدء المعالجة')
         run(video_path(job['video']), out, grid=(s['xs'], s['ys']), panels=s['panels'], opts=opts,
-            mode=s['mode'], device=s['device'], max_frames=s.get('max_frames') or None, log=log)
+            mode=s['mode'], device=s['device'], max_frames=s.get('max_frames') or None, log=log,
+            subject=s.get('subject', 'human'))
         job['status'] = 'done'; job['progress'] = 1.0; job['finished'] = time.time()
         job['log'].append(time.strftime('%H:%M:%S ') + 'اكتملت المعالجة')
     except Cancelled:
@@ -193,9 +197,12 @@ def start_job(body):
              height=float(body.get('height', 1.75)), mode=body.get('mode', 'performance'),
              device=body.get('device', 'auto'), max_frames=int(body.get('max_frames') or 0),
              fov=float(body.get('fov', 40)), cutoff=float(body.get('cutoff', 6)),
-             reuse_from=body.get('reuse_from'))
-    if len(s['panels']) < 2:
-        raise ValueError('اختر زاويتين على الأقل')
+             reuse_from=body.get('reuse_from'), subject=body.get('subject', 'human'),
+             weight=float(body.get('weight') or 0) or None)
+    if s['subject'] not in ('human', 'dog', 'horse'):
+        raise ValueError('نوع غير مدعوم')
+    if len(s['panels']) < 1:
+        raise ValueError('اختر لوحة واحدة على الأقل')
     if s['yaws'] and len(s['yaws']) != len(s['panels']):
         raise ValueError('عدد الاتجاهات لا يطابق عدد الزوايا المختارة')
     jid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
@@ -229,13 +236,19 @@ def _motion_payload(m, issues=True):
 
 
 def job_motion(jid):
-    from .timeline import load, load_edits
-    from .skeleton import NAMES, BONES
+    from .timeline import load, load_edits, skel
     out = _out(jid)
-    d = _motion_payload(load(out))
+    m = load(out)
+    sk = skel(m)
+    d = _motion_payload(m)
     j = jread(os.path.join(JOBS, jid, 'job.json'), {})
-    d.update(id=jid, name=j.get('video_name', jid), joints=NAMES, bones=[list(b) for b in BONES],
+    d.update(id=jid, name=j.get('video_name', jid), joints=sk['names'], bones=[list(b) for b in sk['bones']],
+             root=sk['names'][sk['root']], feet={k: sk['names'][v[0]] for k, v in sk['feet'].items()},
              edits=load_edits(out), files=sorted(os.listdir(out)))
+    if m['subject'] != 'human':
+        from .animal import SPECIES
+        d['targets'] = [dict(id=m['subject'], label=SPECIES[m['subject']]['label'] + ' (generated rig + proxy body)', ok=True,
+                             source='generated')]
     return d
 
 
@@ -257,6 +270,8 @@ def rig_preview(jid, body):
     from .rig import load_rig
     from .retarget import retarget
     c = apply_edits(load(_out(jid)), body.get('edits', []))
+    if c.get('subject', 'human') != 'human':
+        return _animal_preview(c, body)
     tid = body.get('target', 'ue4')
     rig = load_rig(tid)
     res = retarget(c['P'], c['fps'], rig, hands=c.get('hands'), contacts=c['contacts'])
@@ -289,6 +304,35 @@ def rig_preview(jid, body):
     return out
 
 
+def _animal_preview(c, body):
+    """Generated quadruped rig: bone positions + proxy body skin matrices (viewer space)."""
+    from . import animal as A
+    rig = A.build_rig(c['P'], c['subject'])
+    rt = A.retarget(c['P'], rig, c['fps'])
+    names = [n for n, *_ in A.RIG]
+    par = {n: p for n, p, *_ in A.RIG}
+    links = [[names.index(par[n]), names.index(n)] for n in names if par[n] in names]
+    inv = A.W2R.T / 100.0                                                   # rig cm -> viewer m
+    X = np.stack([res_pos for res_pos in (rt['globals'][n][:, :3, 3] for n in names)], 1) @ inv.T
+    out = dict(target=c['subject'], names=names, links=links, tips=[], pos=np.round(X, 4).tolist(), fingers={}, mesh=False)
+    if body.get('body', True):
+        verts, polys, weights = A.proxy_mesh(rig)
+        bones = list(weights)
+        jn = np.zeros((len(verts), 4), np.uint16); wt = np.zeros((len(verts), 4), np.float32)
+        for bi, b in enumerate(bones):
+            jn[weights[b][0], 0] = bi; wt[weights[b][0], 0] = 1.0
+        tris = [[p[0], p[k], p[k + 1]] for p in polys for k in range(1, len(p) - 1)]
+        from .rig import rest_globals
+        G0 = rest_globals(rig)
+        A4 = np.eye(4); A4[:3, :3] = inv
+        K_ = np.stack([A4 @ rt['globals'][b] @ np.linalg.inv(G0[b]) for b in bones], 1)
+        key = 'gen_' + c['subject']
+        out.update(mesh=key, mesh_target=key, skin=_b64(K_[:, :, :3, :]),
+                   mesh_inline=dict(name=key, n=len(verts), nf=len(tris), bones=bones, verts=_b64(verts),
+                                    faces=_b64(np.asarray(tris), np.uint32), joints=_b64(jn, np.uint16), weights=_b64(wt)))
+    return out
+
+
 def _b64(a, dt=np.float32):
     import base64
     return base64.b64encode(np.ascontiguousarray(a, dt).tobytes()).decode('ascii')
@@ -312,7 +356,7 @@ def mesh_payload(stem):
 def clean_export(jid, body):
     from .timeline import save_clean
     from .rig import list_targets
-    ok = {t['id'] for t in list_targets() if t['ok']}
+    ok = {t['id'] for t in list_targets() if t['ok']} | {'dog', 'horse'}
     targets = [t for t in body.get('targets', ['ue4']) if t in ok] or ['ue4']
     log = []
     files, c = save_clean(_out(jid), body.get('edits', []), targets, bool(body.get('root_motion')),

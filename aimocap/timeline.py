@@ -28,17 +28,26 @@ OPS = ('interpolate', 'smooth', 'hold', 'foot_lock', 'relax_hands', 'fix_hands',
 ISSUE_TYPES = ('spike', 'jitter', 'low_quality', 'foot_skate', 'hand_lost')
 
 
+def skel(m):
+    """Skeleton description for the motion's subject (human / dog / horse)."""
+    if m.get('subject', 'human') == 'human':
+        from .skeleton import NAMES, BONES
+        return dict(feet=FOOT, bone_idx=None, sym=None, root=IDX['hip'], names=NAMES, bones=BONES)
+    from . import animal as A
+    return dict(feet=A.PAWS, bone_idx=A.BONE_IDX, sym=A.SYM, root=A.IDX['neck'], names=A.NAMES, bones=A.BONES)
+
+
 # ------------------------------------------------------------------ load --
 def load(out_dir):
     mj = json.load(open(os.path.join(out_dir, 'motion.json')))
-    m = dict(fps=float(mj['fps']), P=np.array(mj['corrected'], float),
+    m = dict(fps=float(mj['fps']), P=np.array(mj['corrected'], float), subject=mj.get('subject', 'human'),
              quality=np.array(mj['quality'], float) if mj.get('quality') else None,
              contacts={k: np.array(v, bool) for k, v in (mj.get('contacts') or {}).items()},
              hands=None)
     if mj.get('hands'):
         m['hands'] = {k: (np.array(v, float) if v is not None else None) for k, v in mj['hands'].items()}
     if not m['contacts']:
-        m['contacts'] = K.foot_contacts(m['P'], m['fps'])
+        m['contacts'] = K.foot_contacts(m['P'], m['fps'], feet=skel(m)['feet'])
     return m
 
 
@@ -73,7 +82,7 @@ def analyze(m):
     sev['low_quality'] = np.clip((0.35 - np.mean(q, 1)) / 0.25, 0, 1) if q is not None else np.zeros(T)
     # foot skate: horizontal foot speed while in contact
     sk = np.zeros(T)
-    for side, idx in FOOT.items():
+    for side, idx in skel(m)['feet'].items():
         c = m['contacts'].get(side)
         if c is None or T < 2:
             continue
@@ -176,6 +185,7 @@ def apply_edits(m, edits):
     """Returns a new motion dict with the edit list applied."""
     P = m['P'].copy()
     fps, T = m['fps'], len(m['P'])
+    sk = skel(m)
     H = _hand_rel(m)
     cont = {k: v.copy() for k, v in m['contacts'].items()}
     hand_arrays = lambda: [H[s] for s in ('left', 'right') if H and H.get(s) is not None]
@@ -227,7 +237,7 @@ def apply_edits(m, edits):
             sub = {k: np.zeros(T, bool) for k in cont}
             for k in cont:
                 sub[k][a:b + 1] = cont[k][a:b + 1]
-            P, _ = K.fix_foot_skating(P, sub)
+            P, _ = K.fix_foot_skating(P, sub, feet=sk['feet'])
         elif op == 'fix_hands':
             _fix_hands(H, fps, a, b, float(e.get('strength', 0.5)))
         elif op == 'relax_hands':
@@ -239,8 +249,8 @@ def apply_edits(m, edits):
             raise ValueError('unknown edit op: ' + str(op))
         touched[a:b + 1] = True
     if touched.any():                            # keep the skeleton anatomically valid
-        L = K.bone_targets(m['P'])
-        Pa = K.enforce_bones(P, L, iters=15)
+        L = K.bone_targets(m['P'], None, sk['bone_idx'], sk['sym'])
+        Pa = K.enforce_bones(P, L, iters=15, bone_idx=sk['bone_idx'])
         P = np.where(touched[:, None, None], Pa, P)
         P, _ = K.clamp_ground(P)
     keep = np.arange(T) if trim is None else np.arange(trim[0], trim[1] + 1)
@@ -251,7 +261,7 @@ def apply_edits(m, edits):
     if loop and len(P) > 2 * loop + 2:
         n = loop
         w = (0.5 - 0.5 * np.cos(np.linspace(0, np.pi, n)))[:, None, None]
-        root = P[:, IDX['hip']].copy(); root[:, 1] = 0
+        root = P[:, sk['root']].copy(); root[:, 1] = 0
         rel = P - root[:, None]
         tgt = rel[:n]
         rel[-n:] = rel[-n:] * (1 - w) + tgt * w
@@ -274,7 +284,7 @@ def apply_edits(m, edits):
 # ---------------------------------------------------------------- export --
 def to_json(m):
     r = lambda a: np.round(a, 4).tolist()
-    d = dict(fps=m['fps'], frames=len(m['P']), corrected=r(m['P']),
+    d = dict(fps=m['fps'], frames=len(m['P']), corrected=r(m['P']), subject=m.get('subject', 'human'),
              contacts={k: v.astype(int).tolist() for k, v in m['contacts'].items()})
     if m.get('hands'):
         d['hands'] = {k: (None if v is None else (r(v) if k in ('left', 'right') else np.round(v, 2).tolist()))
@@ -285,17 +295,25 @@ def to_json(m):
 def save_clean(out_dir, edits, targets=('ue4',), root_motion=False, name=None, log=print):
     """Apply edits to OUT_DIR/motion.json and write motion_clean.json/.bvh + Unreal FBX files."""
     from .bvh import write_bvh
-    from .skeleton import NAMES, BONES
     from .unreal import export_unreal, target_tag
     m = load(out_dir)
+    sk = skel(m)
     c = apply_edits(m, edits)
     json.dump(dict(edits=edits), open(os.path.join(out_dir, 'clean_edits.json'), 'w'), indent=1)
     d = to_json(c)
-    d.update(joints=NAMES, bones=[list(b) for b in BONES], source='timeline_cleaner', trim=c['trim'])
+    d.update(joints=sk['names'], bones=[list(b) for b in sk['bones']], source='timeline_cleaner', trim=c['trim'])
     json.dump(d, open(os.path.join(out_dir, 'motion_clean.json'), 'w'), separators=(',', ':'))
     files = ['motion_clean.json', 'motion_clean.bvh']
-    write_bvh(c['P'], c['fps'], os.path.join(out_dir, 'motion_clean.bvh'))
     base = ''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in (name or 'motion_clean'))[:60] or 'motion_clean'
+    if m['subject'] != 'human':                      # generated quadruped rig
+        from . import animal as A
+        rig = A.build_rig(c['P'], m['subject'])
+        rt = A.retarget(c['P'], rig, c['fps'])
+        A.write_bvh(os.path.join(out_dir, 'motion_clean.bvh'), rig, rt, c['fps'])
+        fn = f'{base}_{A.SPECIES[m["subject"]]["label"]}.fbx'
+        A.write_fbx(os.path.join(out_dir, fn), rig, rt, c['fps'], take=base)
+        return files + [fn], c
+    write_bvh(c['P'], c['fps'], os.path.join(out_dir, 'motion_clean.bvh'))
     for t in targets:
         fn = f'{base}_{target_tag(t)}.fbx'
         export_unreal(c['P'], c['fps'], os.path.join(out_dir, fn), t, c.get('hands'), c['contacts'],

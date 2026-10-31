@@ -17,13 +17,23 @@ def main():
     ap.add_argument('--device', default='auto', choices=['auto', 'cuda', 'cpu'])
     ap.add_argument('--max-frames', type=int, default=None)
     ap.add_argument('--no-hands', action='store_true', help='skip smart hand/finger tracking')
+    ap.add_argument('--subject', default='human', choices=['human', 'dog', 'horse'])
+    ap.add_argument('--single-view', action='store_true',
+                    help='one camera (any direction); with a grid, pick the view with --panels N')
+    ap.add_argument('--weight', type=float, default=None, help='body mass in kg (default: 70 human, 25 dog, 500 horse)')
+    ap.add_argument('--no-physics', action='store_true', help='skip the gravity/contact/balance pass')
     a = ap.parse_args()
     from .pipeline import run
-    opts = dict(height=a.height, fov=a.fov, cutoff=a.cutoff)
+    opts = dict(height=a.height, fov=a.fov, cutoff=a.cutoff, physics=not a.no_physics)
+    if a.weight:
+        opts['weight'] = a.weight
+    if a.subject != 'human' and a.height == 1.75:
+        opts.pop('height')                       # species default (withers height)
     if a.yaws:
         opts['yaws'] = [float(v) for v in a.yaws.split(',')]
     panels = [int(v) for v in a.panels.split(',')] if a.panels else None
-    run(a.video, a.out, grid=a.grid, panels=panels, opts=opts, mode=a.mode, device=a.device, max_frames=a.max_frames, hands=not a.no_hands)
+    run(a.video, a.out, grid=a.grid, panels=panels, opts=opts, mode=a.mode, device=a.device, max_frames=a.max_frames, hands=not a.no_hands,
+        subject=a.subject, single_view=a.single_view)
     print('done ->', a.out)
 
 

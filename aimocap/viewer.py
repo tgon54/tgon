@@ -38,14 +38,14 @@ function line(a,b,c,w){g.strokeStyle=c;g.lineWidth=w;g.beginPath();g.moveTo(a[0]
 function skel(F,alpha,raw,q){const pts=F.map(P);g.globalAlpha=alpha;g.lineCap='round';
  for(const[a,b]of D.bones){const A=pts[I[a]],B=pts[I[b]];line(A,B,raw?'#ff5d5d':col(b),Math.max(2,A[2]*.03))}
  D.joints.forEach((n,i)=>{const c=q?q[i]:1;g.fillStyle=raw?'#ff5d5d':col(n);g.globalAlpha=alpha*(.35+.65*c);g.beginPath();g.arc(pts[i][0],pts[i][1],Math.max(3,pts[i][2]*.022),0,7);g.fill()});g.globalAlpha=1}
-function draw(){const W=cv.width,H=cv.height;g.clearRect(0,0,W,H);const C=D.corrected[fi];cx0=C[I.hip][0];cz0=C[I.hip][2];
+function draw(){const W=cv.width,H=cv.height;g.clearRect(0,0,W,H);const C=D.corrected[fi];const RI=I[D.root||'hip'];cx0=C[RI][0];cz0=C[RI][2];
  g.strokeStyle='#1b2a36';g.lineWidth=1;const gx=Math.round(cx0*2)/2,gz=Math.round(cz0*2)/2;
  for(let i=-8;i<=8;i++){line(P([gx+i*.25,0,gz-2]),P([gx+i*.25,0,gz+2]),'#1b2a36',1);line(P([gx-2,0,gz+i*.25]),P([gx+2,0,gz+i*.25]),'#1b2a36',1)}
  if($('cR').checked&&D.raw)skel(D.raw[fi],.55,true);
  if($('cC').checked)skel(C,1,false,D.quality?D.quality[fi]:null);
  if($('cM').checked&&D.com){g.strokeStyle='#e8eef4';g.globalAlpha=.5;g.beginPath();for(let k=Math.max(0,fi-60);k<=fi;k++){const p=P([D.com[k][0],0.002,D.com[k][2]]);k==Math.max(0,fi-60)?g.moveTo(p[0],p[1]):g.lineTo(p[0],p[1])}g.stroke();g.globalAlpha=1;
   const c=P(D.com[fi]),c0=P([D.com[fi][0],0,D.com[fi][2]]);line(c,c0,'#e8eef4',1);g.fillStyle='#fff';g.beginPath();g.arc(c[0],c[1],6,0,7);g.fill()}
- if($('cF').checked&&D.contacts){for(const s of['left','right'])if(D.contacts[s][fi]){const p=P([C[I[s+'_heel']][0],0,C[I[s+'_heel']][2]]);g.strokeStyle='#7CFC9A';g.lineWidth=3;g.beginPath();g.ellipse(p[0],p[1],p[2]*.08,p[2]*.03,0,0,7);g.stroke()}}
+ if($('cF').checked&&D.contacts){for(const s of Object.keys(D.contacts))if(D.contacts[s][fi]){const fj=I[(D.feet||{})[s]||s+'_heel'];const p=P([C[fj][0],0,C[fj][2]]);g.strokeStyle='#7CFC9A';g.lineWidth=3;g.beginPath();g.ellipse(p[0],p[1],p[2]*.08,p[2]*.03,0,0,7);g.stroke()}}
  $('t').textContent=`frame ${fi+1}/${T} · ${(fi/D.fps).toFixed(2)}s`}
 function loop(t){const dt=t-last;last=t;if(play){acc+=dt*(+$('sp').value);const step=1000/D.fps;while(acc>step){fi=(fi+1)%T;acc-=step}s.value=fi}draw();requestAnimationFrame(loop)}requestAnimationFrame(loop);
 </script></body></html>'''

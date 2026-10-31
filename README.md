@@ -19,8 +19,39 @@ Command line:
 python -m aimocap my_ai_video.mp4 out --height 1.75 [--grid 2x2] [--no-hands]
 python -m aimocap.unreal out --target ue4 [--root-motion]      # or ue5, or a .fbx skeleton with UE bone names
 python -m aimocap.timeline out --auto 0.5 --target ue4 --target ue5
-python test_unreal.py                                          # self-check of the Unreal export
+python -m aimocap clip.mp4 out --single-view                   # ONE camera, any direction (front/side/back)
+python -m aimocap grid.mp4 out --grid 2x2 --panels 1           # one view out of a grid
+python -m aimocap dog.mp4 out --subject dog --single-view      # dogs / horses (--subject horse)
+python test_unreal.py; python test_physics.py; python test_animal.py   # self-checks
 ```
+
+## Single camera (any direction)
+
+Select **one** panel in the UI (or the *كاميرا واحدة* preset, or `--single-view`): the RTMW3D whole-body
+model gives per-joint metric depth from one view, the scale comes from the subject's height, and the same
+2D glitch screening, temporal filtering, anthropometric limits and physics run on it. Hands (21 points each)
+come from the same model. Measured on the sample clip against the 4-camera reconstruction: **front 111 mm,
+side 140 mm, back 108 mm** mean joint error (multi-camera stays far more accurate — use it when you can).
+
+## Physics & body weight
+
+Every run (multi-camera, single camera, animals) ends with a physics pass using the body mass
+(`--weight`, UI field; default 70 kg / dog 25 kg / horse 500 kg):
+* natural limb lengths (Drillis & Contini anthropometry), so a single camera cannot stretch limbs;
+* gravity: when no foot touches the ground the centre of mass follows a ballistic parabola (a = −g) —
+  false "flights" (missed contacts) are detected and left alone;
+* the ground can only push: COM acceleration ≥ −g, ≤ 4 g, horizontal inside the friction cone;
+* static balance: standing still, the centre of mass is kept over the feet;
+* `physics_com_grf.csv`: centre of mass, velocity and ground reaction force (N and × body weight),
+  plus a physics section in the report.
+
+## Dogs and horses
+
+Choose **Dog / Horse** in the UI (or `--subject dog|horse`). A ViTPose APT-36K model finds 17 animal
+keypoints; one camera or a multi-view grid works. Output: `motion_Dog.fbx` / `motion_Horse.fbx` with a
+**generated quadruped skeleton + skinned proxy body** — import it in Unreal *without* choosing a skeleton
+(it creates Skeleton + Skeletal Mesh), then retarget onto your own dog/horse with the IK Retargeter.
+Also `motion.bvh`, viewer, report, physics CSV; the Timeline Cleaner works on animals too.
 
 ## Unreal Engine export (UE4 / UE5)
 

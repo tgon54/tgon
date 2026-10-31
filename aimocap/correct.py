@@ -24,7 +24,7 @@ def flag_2d_glitches(kp, conf, k=6.0):
         if not np.isfinite(hgt) or hgt <= 0:
             continue
         xf = np.nan_to_num(x, nan=0.0)
-        med = np.stack([np.stack([medfilt(xf[:, j, a], 5) for a in range(2)], -1) for j in range(J)], 1)
+        med = np.stack([np.stack([medfilt(xf[:, j, a], 5) for a in range(2)], -1) for j in range(x.shape[1])], 1)
         d = np.linalg.norm(xf - med, axis=-1) / hgt
         s = np.nanmedian(d, 0) * 1.4826 + 0.004
         bad = d > k * s[None]
@@ -184,30 +184,33 @@ def align_world(P, height=None, face_z=True):
 
 
 # ----------------------------------------------------------- anatomical ----
-def bone_targets(P, q=None):
+def bone_targets(P, q=None, bone_idx=None, sym=None):
     """Robust bone lengths (median over confident frames), L/R averaged."""
-    a, b = BONE_IDX[:, 0], BONE_IDX[:, 1]
+    bone_idx = BONE_IDX if bone_idx is None else bone_idx
+    sym = SYM_BONES if sym is None else sym
+    a, b = bone_idx[:, 0], bone_idx[:, 1]
     L = np.linalg.norm(P[:, b] - P[:, a], axis=-1)
     if q is not None:
         w = np.minimum(q[:, a], q[:, b]) > 0.4
         L = np.where(w, L, np.nan)
     tgt = np.nanmedian(L, 0)
-    for i, k in SYM_BONES:
+    for i, k in sym:
         m = np.nanmean([tgt[i], tgt[k]])
         tgt[i] = tgt[k] = m
     return tgt
 
 
-def enforce_bones(P, L, q=None, iters=25, heavy=None):
+def enforce_bones(P, L, q=None, iters=25, heavy=None, bone_idx=None):
     """Position-based dynamics: enforce constant bone lengths. Low-confidence joints
     move more than confident ones. heavy: (T,J) bool joints pinned (e.g. feet in contact)."""
     P = P.copy()
     T = P.shape[0]
-    inv = 1.0 / (np.clip(q, 0, 1) + 0.1) if q is not None else np.ones((T, J))
+    bone_idx = BONE_IDX if bone_idx is None else bone_idx
+    inv = 1.0 / (np.clip(q, 0, 1) + 0.1) if q is not None else np.ones(P.shape[:2])
     if heavy is not None:
         inv = np.where(heavy, 1e-3, inv)
     for _ in range(iters):
-        for (a, b), l in zip(BONE_IDX, L):
+        for (a, b), l in zip(bone_idx, L):
             d = P[:, b] - P[:, a]
             n = np.linalg.norm(d, axis=-1, keepdims=True) + 1e-9
             corr = (n - l) / n * d
@@ -240,10 +243,10 @@ def fix_knee_hyperextension(P, max_back=0.03):
 
 
 # -------------------------------------------------------------- physics ----
-def foot_contacts(P, fps, h_thr=0.05, v_thr=0.25, min_len=3):
+def foot_contacts(P, fps, h_thr=0.05, v_thr=0.25, min_len=3, feet=None):
     """Contact = foot near ground AND nearly stationary (hysteresis by morphology)."""
     out = {}
-    for s, idx in FOOT.items():
+    for s, idx in (FOOT if feet is None else feet).items():
         h = P[:, idx, 1].min(1)
         c = P[:, idx].mean(1)
         v = np.zeros(len(P))
@@ -261,13 +264,13 @@ def _segments(m):
     return list(zip(np.where(d == 1)[0], np.where(d == -1)[0]))
 
 
-def fix_foot_skating(P, contacts, ramp=4, max_shift=0.05):
+def fix_foot_skating(P, contacts, ramp=4, max_shift=0.05, feet=None):
     """Pin each foot during contact (no sliding) and blend in/out smoothly.
     Frames needing a shift > max_shift are treated as false contacts (left untouched)."""
     P = P.copy()
     T = len(P)
-    pinned = np.zeros((T, J), bool)
-    for s, idx in FOOT.items():
+    pinned = np.zeros(P.shape[:2], bool)
+    for s, idx in (FOOT if feet is None else feet).items():
         delta = np.zeros((T, 3))
         wgt = np.zeros(T)
         for a, b in _segments(contacts[s]):
@@ -297,17 +300,19 @@ def clamp_ground(P):
 
 
 # -------------------------------------------------------------- metrics ----
-def metrics(P, fps, contacts=None, L=None):
-    a, b = BONE_IDX[:, 0], BONE_IDX[:, 1]
+def metrics(P, fps, contacts=None, L=None, bone_idx=None, feet=None):
+    bone_idx = BONE_IDX if bone_idx is None else bone_idx
+    feet = FOOT if feet is None else feet
+    a, b = bone_idx[:, 0], bone_idx[:, 1]
     bl = np.linalg.norm(P[:, b] - P[:, a], axis=-1)
     cv = np.nanmean(np.nanstd(bl, 0) / (np.nanmean(bl, 0) + 1e-9))
     acc = np.diff(P, 2, axis=0) * fps * fps
     jitter = float(np.nanmean(np.linalg.norm(acc, axis=-1)))
     out = {'bone_length_cv_pct': float(cv * 100), 'mean_accel_m_s2': jitter,
-           'ground_penetration_frames': int((np.concatenate([P[:, FOOT['left'], 1], P[:, FOOT['right'], 1]], 1) < -0.01).any(1).sum())}
+           'ground_penetration_frames': int((np.concatenate([P[:, i, 1] for i in feet.values()], 1) < -0.01).any(1).sum())}
     if contacts is not None:
         sk = []
-        for s, idx in FOOT.items():
+        for s, idx in feet.items():
             c = P[:, idx].mean(1)
             v = np.linalg.norm(np.diff(c[:, [0, 2]], axis=0), axis=-1) * fps
             m = contacts[s][1:] & contacts[s][:-1]

@@ -167,7 +167,7 @@ def robust_triangulate(cams, uv, conf, thr=0.03, min_conf=0.3):
 
 
 # ---------------------------------------------------------- swap (Viterbi) --
-def resolve_swaps(cams, uv, conf, ref=0, lam=0.02, min_conf=0.3):
+def resolve_swaps(cams, uv, conf, ref=0, lam=0.02, min_conf=0.3, groups=None, flip=None):
     """For every symmetric joint group, decide per frame which views have left/right
     labels swapped. Hidden state = swap pattern of non-reference views; emission =
     reprojection error of triangulating the group; transition = lam * changes.
@@ -177,9 +177,10 @@ def resolve_swaps(cams, uv, conf, ref=0, lam=0.02, min_conf=0.3):
     states = list(itertools.product([0, 1], repeat=len(others)))
     uv2, cf2 = uv.copy(), conf.copy()
     decisions = {}
-    for g, idx in SWAP_GROUPS.items():
+    flip = FLIP if flip is None else flip
+    for g, idx in (SWAP_GROUPS if groups is None else groups).items():
         idx = np.array(idx)
-        fl = FLIP[idx]
+        fl = flip[idx]
         cost = np.zeros((len(states), T))
         for si, st in enumerate(states):
             u = uv[:, :, idx].copy(); c = conf[:, :, idx].copy()

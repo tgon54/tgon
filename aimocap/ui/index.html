@@ -183,9 +183,9 @@ summary{cursor:pointer;color:var(--mut);font-size:13px}
     <div class="gtools">
       <span class="hint">الشبكة:</span>
       <div class="seg" id="presets">
-        <button data-p="auto">تلقائي</button><button data-p="1x2">1×2</button><button data-p="2x2">2×2</button><button data-p="1x4">1×4</button><button data-p="2x3">2×3</button><button data-p="2x5">2×5</button>
+        <button data-p="auto">تلقائي</button><button data-p="1x1">كاميرا واحدة</button><button data-p="1x2">1×2</button><button data-p="2x2">2×2</button><button data-p="1x4">1×4</button><button data-p="2x3">2×3</button><button data-p="2x5">2×5</button>
       </div>
-      <span class="hint">اسحب الخطوط لضبطها · اضغط على لوحة لاستبعادها أو إعادتها</span>
+      <span class="hint">اسحب الخطوط لضبطها · اضغط على لوحة لاستبعادها أو إعادتها · لوحة واحدة = وضع الكاميرا الواحدة (من أي جهة)</span>
     </div>
     <div class="stage"><canvas id="cv"></canvas></div>
     <div class="scrub"><span class="hint">معاينة</span><input type="range" id="scrub" min="0" max="0" value="0"><span class="hint ltr" id="scrubT">0.0s</span></div>
@@ -199,7 +199,11 @@ summary{cursor:pointer;color:var(--mut);font-size:13px}
   <section class="card off" id="cSet">
     <h2><span class="num">3</span>الإعدادات</h2>
     <div class="form">
-      <div class="field"><label>طول الشخص (يحدد المقياس الحقيقي)</label>
+      <div class="field"><label>نوع الجسم</label>
+        <div class="seg" id="subject"><button data-v="human" class="on">إنسان</button><button data-v="dog">كلب</button><button data-v="horse">حصان</button></div></div>
+      <div class="field"><label>الوزن (لمحاكاة الجاذبية وقوى الأرض)</label>
+        <div class="row"><input type="number" id="wN" min="1" max="1500" step="1" value="70"><span class="hint">كغ</span></div></div>
+      <div class="field"><label id="hLab">طول الشخص (يحدد المقياس الحقيقي)</label>
         <div class="row"><input type="range" id="hR" min="1.2" max="2.2" step="0.01" value="1.75"><input type="number" id="hN" min="0.5" max="2.6" step="0.01" value="1.75"><span class="hint">م</span></div></div>
       <div class="field"><label>دقة الكشف</label>
         <div class="seg" id="mode"><button data-v="performance" class="on">دقيق</button><button data-v="balanced">متوازن</button><button data-v="lightweight">سريع</button></div></div>
@@ -272,11 +276,14 @@ async function showNew(reuseId){
       $('#reuseNote').hidden=false;$('#reuseNote').innerHTML=`إعادة التصحيح لـ <b>${esc(v.name)}</b> باستخدام نتائج الكشف المحفوظة — الشبكة واللوحات ثابتة، ويمكنك تغيير الاتجاهات والإعدادات. ستكون المعالجة سريعة.`;
       $('#drop').hidden=true;$('#recent').hidden=true;
       await pickVideo(v,{xs:s.xs,ys:s.ys,sel:s.panels,yaws:s.yaws});
+      setSeg('#subject',s.subject||'human');$('#wN').value=s.weight||SUBJ[s.subject||'human'].w;
       setHeight(s.height);setSeg('#mode',s.mode);setSeg('#device',s.device);$('#maxF').value=s.max_frames||0;
       $('#fovR').value=$('#fovN').value=s.fov;$('#cutR').value=$('#cutN').value=s.cutoff;summary();
     }
   }
 }
+const SUBJ={human:{w:70,h:1.75,min:1.2,max:2.2,lab:'طول الشخص (يحدد المقياس الحقيقي)'},
+  dog:{w:25,h:0.55,min:0.2,max:1.0,lab:'ارتفاع الكلب عند الكتف (م)'},horse:{w:500,h:1.6,min:0.9,max:2.0,lab:'ارتفاع الحصان عند الكتف (م)'}};
 function setSeg(id,v){$$(id+' button').forEach(b=>b.classList.toggle('on',b.dataset.v===v))}
 function seg(id){return $(id+' button.on').dataset.v}
 function setHeight(v){$('#hR').value=$('#hN').value=(+v).toFixed(2)}
@@ -287,6 +294,9 @@ function bindNew(){
   ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
   drop.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0];if(f)upload(f)});
   $$('#mode button,#device button').forEach(b=>b.onclick=()=>{b.parentNode.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');summary()});
+  $$('#subject button').forEach(b=>b.onclick=()=>{setSeg('#subject',b.dataset.v);const d=SUBJ[b.dataset.v];
+    $('#wN').value=d.w;$('#hR').min=d.min;$('#hR').max=d.max;setHeight(d.h);$('#hLab').textContent=d.lab;summary()});
+  $('#wN').oninput=summary;
   const link=(r,n)=>{$(r).oninput=()=>{$(n).value=$(r).value;summary()};$(n).oninput=()=>{$(r).value=$(n).value;summary()}};
   link('#hR','#hN');link('#fovR','#fovN');link('#cutR','#cutN');
   $('#maxF').oninput=summary;
@@ -392,15 +402,16 @@ function renderViews(){
 function summary(){
   const b=$('#startBtn'),n=S.sel.length;
   if(!S.video){b.disabled=true;$('#sum').textContent='اختر فيديو للبدء';return}
-  b.disabled=n<2;
+  b.disabled=n<1;
   const mf=+$('#maxF').value||S.video.frames;
-  $('#sum').textContent=n<2?'اختر زاويتين على الأقل':`${n} زوايا · ${Math.min(mf,S.video.frames)} إطار · طول ${(+$('#hN').value).toFixed(2)} م${S.reuse?' · إعادة تصحيح (بدون كشف)':''}`;
+  const sj={human:'إنسان',dog:'كلب',horse:'حصان'}[seg('#subject')];
+  $('#sum').textContent=n<1?'اختر لوحة واحدة على الأقل':`${sj} · ${n===1?'كاميرا واحدة (3D من جهة واحدة)':n+' زوايا'} · ${Math.min(mf,S.video.frames)} إطار · ${(+$('#hN').value).toFixed(2)} م · ${+$('#wN').value} كغ${S.reuse?' · إعادة تصحيح (بدون كشف)':''}`;
 }
 async function start(){
   const b=$('#startBtn');b.disabled=true;
   const body={video:S.video.id,xs:S.xs,ys:S.ys,panels:S.sel,yaws:S.autoYaw?null:S.sel.map(p=>S.yaws[p]),
     height:+$('#hN').value,mode:seg('#mode'),device:seg('#device'),max_frames:+$('#maxF').value||0,
-    fov:+$('#fovN').value,cutoff:+$('#cutN').value,reuse_from:S.reuse};
+    fov:+$('#fovN').value,cutoff:+$('#cutN').value,reuse_from:S.reuse,subject:seg('#subject'),weight:+$('#wN').value};
   try{const r=await api('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});go('#job/'+r.id)}
   catch(e){toast(e.message,1);b.disabled=false}
 }
@@ -412,6 +423,8 @@ const FILES={'motion.bvh':['BVH','حركة للشخصيات — Blender / Unity 
   'virtual_cameras_calibration.toml':['TOML','معايرة متوافقة مع FreeMoCap'],'debug_2d_overlay.mp4':['MP4','الكشف ثنائي الأبعاد على الفيديو'],'detections_2d.npz':['NPZ','نتائج الكشف المحفوظة'],
   'motion_UE4.fbx':['FBX','Unreal Engine 4 — UE4_Mannequin_Skeleton (مع حركة الأصابع)'],'motion_UE5.fbx':['FBX','Unreal Engine 5 — SK_Mannequin (Manny)'],
   'motion_clean.json':['JSON','الحركة بعد منظّف الخط الزمني'],'motion_clean.bvh':['BVH','الحركة بعد التنظيف'],'clean_edits.json':['JSON','تعديلات منظّف الخط الزمني'],
+  'motion_Dog.fbx':['FBX','Unreal — هيكل كلب مولَّد + جسم مبدئي (يُنشئ Skeleton عند الاستيراد)'],'motion_Horse.fbx':['FBX','Unreal — هيكل حصان مولَّد + جسم مبدئي'],
+  'physics_com_grf.csv':['CSV','الفيزياء: مركز الثقل والسرعة وقوة رد فعل الأرض (نيوتن ووزن الجسم)'],'detections_mono.npz':['NPZ','كشف الكاميرا الواحدة المحفوظ (3D)'],
   'hand_left_3d_xyz_m.npy':['NPY','نقاط اليد اليسرى 21×3'],'hand_right_3d_xyz_m.npy':['NPY','نقاط اليد اليمنى 21×3']};
 let lastLogLen=0,curTab='viewer';
 async function showJob(id){

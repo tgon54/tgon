@@ -119,6 +119,11 @@ def reconstruct_hands(cams, hkp, hconf, arm_swaps, body_tri, body_world, body_fi
     ok = np.isfinite(A).all(-1) & np.isfinite(B).all(-1)
     s, R, t = _similarity(A[ok], B[ok])
     X = s * X @ R.T + t
+    return finalize_hands(X, q, fps, body_final, cutoff)
+
+
+def finalize_hands(X, q, fps, body_final, cutoff=8.0):
+    """World-space hands (T,2,21,3) + quality (T,2,21) -> clean wrist-attached hands dict."""
     out = {}
     for i, side in enumerate(SIDES):
         H, qh = X[:, i], q[:, i]

@@ -23,7 +23,7 @@ def read_back(path):
     parent, cn_target, cv_target = {}, {}, {}
     for c in conns:
         v = c.values
-        if v[0] == b'OO' and v[1] in models:
+        if v[0] == b'OO' and v[1] in models and (v[2] in models or v[2] == 0):    # skip skin-cluster links
             parent[v[1]] = v[2]
         elif v[0] == b'OP' and v[2] in models:
             cn_target[v[1]] = (v[2], v[3].decode())

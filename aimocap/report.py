@@ -27,7 +27,23 @@ def _figs(res):
     ax.set_xticks(range(len(NAMES))); ax.set_xticklabels(NAMES, rotation=70, fontsize=7)
     ax.set_ylim(0, 1); ax.set_title('Mean 3D quality per joint (confidence x views x reprojection)')
     out.append(('جودة كل مفصل', _img(fig)))
-    # 2 reprojection per view over time
+    # 2 reprojection per view over time (multi-camera only)
+    if res.get('cameras') is not None:
+        out += _reproj_fig(res, t)
+    if res.get('grf') is not None and len(res['grf']) == T:
+        fig, ax = plt.subplots(figsize=(9, 2.6))
+        bw = res['report'].get('physics', {}).get('mass_kg', 70.0) * 9.81
+        ax.plot(t, res['grf'][:, 1] / bw, color=BLUE, lw=1.2, label='vertical GRF')
+        if res.get('airborne') is not None and res['airborne'].any():
+            ax.fill_between(t, 0, res['airborne'] * ax.get_ylim()[1], color=ORANGE, alpha=.25, label='flight (ballistic)')
+        ax.axhline(1, color=GRAY, lw=.8, ls='--'); ax.set_ylabel('x body weight'); ax.set_xlabel('s'); ax.legend(fontsize=7)
+        ax.set_title('Ground reaction force from the centre of mass (F = m(a+g))')
+        out.append(('قوة رد فعل الأرض (الفيزياء)', _img(fig)))
+    return out + _figs_rest(res, fps, P, T, t)
+
+
+def _reproj_fig(res, t):
+    out = []
     fig, ax = plt.subplots(figsize=(9, 2.6))
     e = np.where(res['used'], res['err'], np.nan)
     with np.errstate(all='ignore'):
@@ -36,6 +52,11 @@ def _figs(res):
     ax.set_ylabel('reproj err (x panel h)'); ax.set_xlabel('s'); ax.legend(ncol=6, fontsize=7)
     ax.set_title('Reprojection error per view (spikes = AI-inconsistent frames)')
     out.append(('خطأ إعادة الإسقاط لكل زاوية', _img(fig)))
+    return out
+
+
+def _figs_rest(res, fps, P, T, t):
+    out = []
     # 3 bone length stability
     fig, ax = plt.subplots(figsize=(9, 2.8))
     def cv(X):
@@ -76,6 +97,17 @@ def _figs(res):
     return out
 
 
+def _physics_html(r):
+    ph = r.get('physics')
+    if not ph:
+        return ''
+    lab = {'mass_kg': 'الوزن (كغ)', 'flight_phases': 'مراحل طيران مصححة (قطع مكافئ)', 'physics_violation_pct_before': 'إطارات مخالفة للفيزياء قبل %',
+           'physics_violation_pct_after': 'إطارات مخالفة للفيزياء بعد %', 'balance_fixed_pct': 'إطارات توازن مصححة %',
+           'airborne_pct': 'نسبة الطيران %', 'peak_grf_bw': 'أقصى قوة أرض (× الوزن)', 'mean_grf_bw': 'متوسط قوة الأرض (× الوزن)'}
+    rows = ''.join(f'<tr><td>{lab.get(k, k)}</td><td>{v:.2f}</td></tr>' for k, v in ph.items() if isinstance(v, (int, float)))
+    return f'<h2>محاكاة الجسم والوزن (الفيزياء)</h2><table>{rows}</table>'
+
+
 def write_report(res, path):
     r = res['report']; m = r['metrics']
     cams = res['cameras']
@@ -84,8 +116,8 @@ def write_report(res, path):
         f = lambda v: '—' if v is None else f'{v:.3f}'
         return f'<tr><td>{lab}</td><td>{f(a)}</td><td>{f(b)}</td><td><b>{f(c)}</b></td><td>{unit}</td></tr>'
     camrows = ''
-    C = cams.centers()
-    for v in range(cams.V):
+    C = cams.centers() if cams is not None else np.zeros((0, 3))
+    for v in range(len(C)):
         d = np.linalg.norm(C[v, [0, 2]]); yaw = np.degrees(np.arctan2(C[v, 0], C[v, 2])) % 360
         e = r['reproj_err_median_per_view'][v]
         camrows += (f'<tr><td>{v}</td><td>{cams.yaws[v]:.0f}°</td><td>{yaw:.1f}°</td><td>{d:.2f}</td>'
@@ -114,7 +146,8 @@ th{{background:#f4f7fa}}img{{max-width:100%;direction:ltr}}.k{{display:flex;gap:
 <tr><td>عكس كامل لليمين/اليسار</td><td>{"نعم" if r["global_mirror_fixed"] else "لا"}</td></tr>
 <tr><td>تلامس القدم (يسار / يمين)</td><td>{r["contact_pct"]["left"]:.0f}% / {r["contact_pct"]["right"]:.0f}%</td></tr></table>
 <h3>تبديل يمين/يسار المصحَّح (عدد الإطارات لكل زاوية)</h3><table><tr><th>المجموعة</th><th>الزوايا 0..N</th></tr>{sw}</table>
-<h2>الكاميرات الافتراضية بعد المعايرة الذاتية</h2>
+{_physics_html(r)}
+<h2>الكاميرات الافتراضية بعد المعايرة الذاتية</h2>{"<p>كاميرا واحدة: العمق من نموذج RTMW3D ثلاثي الأبعاد، والمقياس من طول الجسم، ثم القيود التشريحية والفيزيائية.</p>" if cams is None else ""}
 <table><tr><th>زاوية</th><th>الاتجاه المفترض</th><th>الاتجاه المقدَّر</th><th>المسافة (م)</th><th>الارتفاع (م)</th><th>البعد البؤري (px)</th><th>خطأ الإسقاط الوسيط</th></tr>{camrows}</table>
 <p style="color:#5b6b7b">المعايرة تتم بضبط الحزم (bundle adjustment) باستخدام نقاط جسم الشخص كهدف معايرة، مع تثبيت الزاوية 0 وتنظيم ضعيف نحو التوزيع الاسمي. المسافات بوحدة نسبية قبل التحجيم بطول الشخص.</p>
 {figs}

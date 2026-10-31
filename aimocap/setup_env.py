@@ -27,7 +27,7 @@ def main():
     pip('install', '--upgrade', 'pip')
     if pip('install', 'numpy', 'scipy', 'opencv-python', 'matplotlib', 'tqdm') != 0:
         sys.exit('pip failed while installing base packages')
-    if pip('install', '--no-deps', 'rtmlib') != 0:
+    if pip('install', '--no-deps', '-U', 'rtmlib>=0.0.13') != 0:      # >=0.0.13: RTMW3D (single camera)
         sys.exit('pip failed while installing rtmlib')
     gpu = has_nvidia()
     print('NVIDIA GPU detected' if gpu else 'No NVIDIA GPU detected -> CPU build')

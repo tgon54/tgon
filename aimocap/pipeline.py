@@ -7,6 +7,7 @@ import numpy as np
 from . import cameras as C
 from . import correct as K
 from .skeleton import NAMES, BONES, J, FLIP, center_of_mass, joint_angles, IDX
+from .physics import anthropometric_lengths
 
 
 DEFAULTS = dict(
@@ -18,6 +19,8 @@ DEFAULTS = dict(
     min_conf=0.3,
     ba_frames=80,
     swap_lambda=0.02,
+    weight=70.0,          # body mass in kg (ground reaction forces)
+    physics=True,         # gravity / contact / balance pass
 )
 
 
@@ -31,6 +34,23 @@ def _sample_frames(conf, n):
     return idx
 
 
+def _physics(Xp, cont, L, q, fps, o, rep, log):
+    """Gravity/contact/balance pass + ground reaction forces (needs body mass)."""
+    from .skeleton import FOOT
+    from .physics import simulate
+    T = len(Xp)
+    if not o.get('physics', True) or T < 10:
+        return Xp, np.zeros((T, 3)), np.zeros(T, bool)
+
+    def repin(P):
+        P, pinned = K.fix_foot_skating(P, cont)
+        P = K.enforce_bones(P, L, q, iters=10, heavy=pinned)
+        return K.clamp_ground(P)[0]
+    Xp, prep, F, air = simulate(Xp, fps, center_of_mass, FOOT, cont, o.get('weight', 70.0), repin, log)
+    rep['physics'] = prep
+    return Xp, F, air
+
+
 def calibrate(kp, conf, sizes, o, log=print):
     best = None
     for yaws in C.candidate_yaw_sets(len(sizes), o['yaws']):
@@ -38,7 +58,7 @@ def calibrate(kp, conf, sizes, o, log=print):
         log(f'  testing camera layout yaws={[round(y) for y in yaws]}')
         err = None
         for r in range(2):
-            uv, cf, _ = C.resolve_swaps(cams, kp, conf, lam=o['swap_lambda'], min_conf=o['min_conf'])
+            uv, cf, _ = C.resolve_swaps(cams, kp, conf, lam=o['swap_lambda'], min_conf=o['min_conf'], **o.get('_swap', {}))
             fr = _sample_frames(cf, o['ba_frames'])
             cams2, err2 = C.bundle_adjust(cams, uv, cf, fr, log=log)
             if err2 is None:
@@ -106,8 +126,9 @@ def reconstruct(kp, conf, sizes, fps, opts=None, log=print, hands2d=None):
     rep['scale'] = float(scale)
     stage_tri = Xw.copy()
 
-    # 7) anatomy
+    # 7) anatomy (+ natural human proportions)
     L = K.bone_targets(Xw, q)
+    L, rep['anthropometric_clamped_bones'] = anthropometric_lengths(L, BONES, o['height'], tol=o.get('anthro_tol', 0.2))
     Xa = K.enforce_bones(Xw, L, q)
     Xa, nk = K.fix_knee_hyperextension(Xa)
     rep['knee_hyperextension_fixed'] = nk
@@ -118,6 +139,7 @@ def reconstruct(kp, conf, sizes, fps, opts=None, log=print, hands2d=None):
     Xp = K.enforce_bones(Xp, L, q, iters=15, heavy=pinned)
     Xp, npen = K.clamp_ground(Xp)
     rep['ground_clamped_samples'] = npen
+    Xp, F, air = _physics(Xp, cont, L, q, fps, o, rep, log)
 
     # 9) smart hands: triangulate 21-point hands, follow arm L/R decisions, attach to wrists
     hands = None
@@ -149,7 +171,7 @@ def reconstruct(kp, conf, sizes, fps, opts=None, log=print, hands2d=None):
 
     return dict(final=Xp, raw=Xr, triangulated=stage_tri, quality=q, contacts=cont,
                 cameras=cams, err=err, used=used, gflags=gflags, swaps=dec, report=rep,
-                com=center_of_mass(Xp), angles=joint_angles(Xp), fps=fps, hands=hands)
+                com=center_of_mass(Xp), angles=joint_angles(Xp), fps=fps, hands=hands, grf=F, airborne=air)
 
 
 # ----------------------------------------------------------------- export --
@@ -174,7 +196,12 @@ def export_all(res, out, log=print):
     np.savetxt(os.path.join(out, 'angles_com_contacts.csv'), rows, delimiter=',', header=','.join(hdr), comments='', fmt='%.4f')
     # game / animation
     write_bvh(P, fps, os.path.join(out, 'motion.bvh'))
-    res['cameras'].to_anipose_toml(os.path.join(out, 'virtual_cameras_calibration.toml'))
+    if res.get('cameras') is not None:
+        res['cameras'].to_anipose_toml(os.path.join(out, 'virtual_cameras_calibration.toml'))
+    if res.get('grf') is not None:
+        from .physics import write_physics_csv
+        write_physics_csv(os.path.join(out, 'physics_com_grf.csv'), res['com'], res['grf'], res['airborne'],
+                          fps, res['report'].get('physics', {}).get('mass_kg', 70.0))
     r = lambda a: np.round(a, 4).tolist()
     data = dict(fps=fps, joints=NAMES, bones=[list(b) for b in BONES], corrected=r(P), raw=r(res['raw']),
                 quality=np.round(res['quality'], 2).tolist(), com=r(res['com']),
@@ -223,7 +250,15 @@ def _panels(video, grid, panels, log):
 
 
 def run(video, out, grid='auto', panels=None, opts=None, mode='performance', device='auto',
-        max_frames=None, log=print, hands=True):
+        max_frames=None, log=print, hands=True, subject='human', single_view=None):
+    """subject: 'human' | 'dog' | 'horse'. One selected panel (or single_view=True) uses the
+    single-camera solver; two or more use multi-view triangulation."""
+    if subject != 'human':
+        from .animal import run as run_animal
+        return run_animal(video, out, subject, grid, panels, opts, 'lightweight' if mode == 'lightweight' else 'balanced',
+                          device, max_frames, log)
+    if single_view or (panels is not None and len(panels) == 1):
+        return run_single(video, out, grid, panels, opts, device, max_frames, log, hands)
     from . import video as Vd
     os.makedirs(out, exist_ok=True)
     cache = os.path.join(out, 'detections_2d.npz')
@@ -244,7 +279,8 @@ def run(video, out, grid='auto', panels=None, opts=None, mode='performance', dev
     else:
         pans, use = _panels(video, grid, panels, log)
         if len(use) < 2:
-            raise SystemExit('Need at least 2 views. Use --grid RxC if auto-detection failed.')
+            log('one view found -> single-camera mode')
+            return run_single(video, out, grid, use, opts, device, max_frames, log, hands)
         det = Vd.Detector(mode=mode, device=device)
         log(f'2D detector: RTMPose Halpe-26 ({mode}) on {det.device}')
         hdet = None
@@ -257,5 +293,27 @@ def run(video, out, grid='auto', panels=None, opts=None, mode='performance', dev
         np.savez(cache, kp=kp, conf=conf, fps=fps, sizes=np.array(sizes), **extra)
     log('3D reconstruction + smart correction...')
     res = reconstruct(kp, conf, sizes, fps, opts, log, hands2d=(hk, hs) if hands and hk is not None else None)
+    export_all(res, out, log)
+    return res
+
+
+def run_single(video, out, grid='auto', panels=None, opts=None, device='auto', max_frames=None, log=print, hands=True):
+    """Single camera (any direction): RTMW3D whole-body 3D + the same correction and physics."""
+    from .mono import MonoDetector, detect_video_mono, reconstruct_mono
+    os.makedirs(out, exist_ok=True)
+    cache = os.path.join(out, 'detections_mono.npz')
+    if os.path.exists(cache):
+        d = np.load(cache)
+        uv, z, s, fps, size = d['uv'], d['z'], d['s'], float(d['fps']), tuple(d['size'])
+        log(f'loaded cached single-view detections ({cache})')
+    else:
+        pans, use = _panels(video, grid, panels, log)
+        pan = pans[use[0]]
+        det = MonoDetector(device)
+        log(f'single-camera 3D detector: RTMW3D whole-body (panel {use[0]}) on {det.device}')
+        uv, z, s, fps, size = detect_video_mono(video, pan, det, out, max_frames, log=log)
+        np.savez(cache, uv=uv, z=z, s=s, fps=fps, size=np.array(size))
+    log('3D (single view) + smart correction + physics...')
+    res = reconstruct_mono(uv, z, s, fps, size, dict(opts or {}, hands=hands), log)
     export_all(res, out, log)
     return res
