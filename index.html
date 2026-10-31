@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>القصبة – شبكة الطرق والأزقة والردم</title>
+<style>
+:root{--panel:rgba(255,250,240,.92);--fg:#2a2118;--acc:#b5532a}
+@media (prefers-color-scheme: dark){:root{--panel:rgba(30,26,22,.9);--fg:#f1e8da;--acc:#e48b5f}}
+html,body{height:100%;margin:0;overflow:hidden;background:#9cc3e6;font-family:system-ui,"Segoe UI",Tahoma,sans-serif;color:var(--fg)}
+canvas{display:block;position:fixed;inset:0;touch-action:none}
+.t{position:fixed;top:calc(env(safe-area-inset-top,0px) + 10px);right:12px;left:12px;pointer-events:none;text-shadow:0 1px 3px rgba(255,255,255,.75);color:#2a2118}
+.t b{font-size:18px}.t small{display:block;opacity:.85}
+.p{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);right:10px;left:10px;background:var(--panel);border-radius:14px;padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:13px;box-shadow:0 4px 18px rgba(0,0,0,.18);max-height:42vh;overflow:auto}
+.p label{display:flex;align-items:center;gap:6px}
+.p input[type=number]{width:70px;padding:4px;border-radius:6px;border:1px solid #8886;background:transparent;color:var(--fg)}
+.p input[type=range]{width:100px;accent-color:var(--acc)}
+.p button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:6px 11px;font:inherit;cursor:pointer}
+.p select{padding:4px;border-radius:6px;background:transparent;color:var(--fg);border:1px solid #8886}
+#st{opacity:.85;flex-basis:100%;line-height:1.6}
+#busy{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:20px;pointer-events:none;color:#2a2118;text-shadow:0 1px 4px #fff}
+</style>
+</head>
+<body>
+<div class="t"><b>القصبة – شبكة الطرق والأزقة والأدراج مع الردم (بلا مبانٍ)</b><small>شوارع رئيسية بين الأبواب · أزقة نافذة · دروب مسدودة · أدراج 15–17 سم بمصاطب · ساقية وسطية · منصّات ردم مسوّاة بجدران سند حجرية · قطع أرض بواجهة وعتبة جاهزة لوضع المباني</small></div>
+<div id="busy">… جاري توليد الخامات والشبكة</div>
+<div class="p">
+<label>البذرة <input id="sd" type="number" value="1954"></label>
+<button id="rd">🎲 عشوائي</button>
+<label>كثافة الدروب <input id="dn" type="range" min="0" max="1" step="0.05" value="0.6"></label>
+<label>الانحدار <input id="sl" type="range" min="0.1" max="0.4" step="0.01" value="0.24"></label>
+<label>الحلقات <input id="lp" type="range" min="0" max="0.8" step="0.05" value="0.3"></label>
+<label>التشعب <input id="br" type="range" min="0" max="1" step="0.05" value="0.6"></label>
+<label>الحجم <select id="sz"><option value="80">صغير</option><option value="120" selected>كبير</option><option value="160">ضخم</option></select></label>
+<label><input id="wl" type="checkbox" checked> السور</label>
+<label><input id="pp" type="checkbox" checked> درابزين</label>
+<label><input id="lt" type="checkbox" checked> حدود القطع</label>
+<button id="tr">🚶 جولة</button>
+<button id="ro">⟳ دوران</button>
+<button data-v="a">🏙️ عام</button><button data-v="t">⬇️ علوي</button><button data-v="p">🏛️ الساحة</button><button data-v="h">⛰️ القمة</button>
+<button id="ex">⬇️ JSON</button>
+<div id="st"></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+'use strict';
+// ======================= parameters & constants =======================
+const P={seed:1954,dens:.6,slope:.24,loops:.3,branch:.6,S:120,wall:true,parapet:true,lots:true};
+const RISE=.16,GMAX=.5,GRAMP=.07,STEP=.17;          // riser target, max stair grade, ramp→stair threshold, door step
+// street hierarchy: width, A* clearance (room for two lot depths between parallel streets), grade weights
+const CLS=[{n:'شارع',w:3.6,v:.1,clr:9,kG:3,kS:.35},{n:'زقاق',w:2.4,v:.16,clr:8,kG:2.5,kS:.25},{n:'درب',w:1.6,v:.18,clr:6,kG:1.6,kS:.1}];
+const clamp=(v,a,b)=>v<a?a:v>b?b:v,lerp=(a,b,t)=>a+(b-a)*t,sstep=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)};
+const mul=a=>()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
+const ihash=(x,y,s)=>{let h=Math.imul(x|0,374761393)+Math.imul(y|0,668265263)+Math.imul(s|0,1442695041);h=Math.imul(h^(h>>>13),1274126177);h^=h>>>16;return(h>>>0)/4294967296};
+let R=Math.random,ph1=0,ph2=0,ph3=0;
+
+// ======================= terrain: hillside amphitheatre facing the sea (north = -z) =======================
+const noise=(x,z)=>Math.sin(x*.11+ph1)*Math.cos(z*.09+ph2)+.5*Math.sin(x*.23+z*.17+ph3)+.25*Math.sin(x*.41-z*.37+ph1*2);
+function H(x,z){const S=P.S,t=z+S*.5;
+ if(t<0)return Math.max(-3,.6+t*.35);
+ const tt=Math.min(t,S*1.15)+Math.max(0,t-S*1.15)*.3;
+ let h=.6+P.slope*tt*(1+.1*Math.sin(x*.035+ph1))+noise(x,z)*Math.min(1,t/12);
+ h+=P.slope*S*.05*Math.cos(Math.min(1,Math.abs(x)/(S*.8))*Math.PI/2)*Math.min(1,t/30); // gentle spur
+ h-=P.slope*S*.08*sstep(S*.48,S*.8,Math.abs(x))*Math.min(1,t/25);                    // side ravines
+ return h}
+
+// ======================= polygon helpers =======================
+function pinside(poly,x,z){let c=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const a=poly[i],b=poly[j];if((a[1]>z)!==(b[1]>z)&&x<(b[0]-a[0])*(z-a[1])/(b[1]-a[1])+a[0])c=!c}return c}
+function segD(px,pz,ax,az,bx,bz){const dx=bx-ax,dz=bz-az,l=dx*dx+dz*dz,t=l?clamp(((px-ax)*dx+(pz-az)*dz)/l,0,1):0;return Math.hypot(px-ax-dx*t,pz-az-dz*t)}
+function psd(poly,x,z){let d=1e9;for(let i=0,j=poly.length-1;i<poly.length;j=i++)d=Math.min(d,segD(x,z,poly[j][0],poly[j][1],poly[i][0],poly[i][1]));return pinside(poly,x,z)?d:-d}
+function dp(pts,tol){if(pts.length<3)return pts.slice();const a=pts[0],b=pts[pts.length-1];let mx=-1,mi=0;
+ for(let i=1;i<pts.length-1;i++){const d=segD(pts[i][0],pts[i][1],a[0],a[1],b[0],b[1]);if(d>mx){mx=d;mi=i}}
+ if(mx<=tol)return [a,b];const l=dp(pts.slice(0,mi+1),tol),r=dp(pts.slice(mi),tol);return l.slice(0,-1).concat(r)}
+function catmull(P,step){ // centripetal Catmull-Rom → dense polyline
+ const n=P.length;if(n<2)return P.slice();const out=[];
+ const ex=(a,b)=>[2*a[0]-b[0],2*a[1]-b[1]];
+ for(let i=0;i<n-1;i++){const p0=i>0?P[i-1]:ex(P[0],P[1]),p1=P[i],p2=P[i+1],p3=i<n-2?P[i+2]:ex(P[n-1],P[n-2]);
+  const tj=(a,b)=>Math.max(1e-4,Math.pow(Math.hypot(b[0]-a[0],b[1]-a[1]),.5));
+  const t0=0,t1=t0+tj(p0,p1),t2=t1+tj(p1,p2),t3=t2+tj(p2,p3),m=Math.max(2,Math.ceil(Math.hypot(p2[0]-p1[0],p2[1]-p1[1])/step));
+  for(let k=0;k<m;k++){const t=t1+(t2-t1)*k/m,L=(a,b,ta,tb)=>[(tb-t)/(tb-ta)*a[0]+(t-ta)/(tb-ta)*b[0],(tb-t)/(tb-ta)*a[1]+(t-ta)/(tb-ta)*b[1]];
+   const A1=L(p0,p1,t0,t1),A2=L(p1,p2,t1,t2),A3=L(p2,p3,t2,t3),B1=L(A1,A2,t0,t2),B2=L(A2,A3,t1,t3);out.push(L(B1,B2,t1,t2))}}
+ out.push(P[n-1]);return out}
+function resample(pl,ds){const out=[{x:pl[0][0],z:pl[0][1]}];let acc=0;
+ for(let i=1;i<pl.length;i++){let ax=pl[i-1][0],az=pl[i-1][1];const bx=pl[i][0],bz=pl[i][1];let l=Math.hypot(bx-ax,bz-az);
+  while(acc+l>=ds){const t=(ds-acc)/l;ax=ax+(bx-ax)*t;az=az+(bz-az)*t;out.push({x:ax,z:az});l=Math.hypot(bx-ax,bz-az);acc=0}acc+=l}
+ const last=pl[pl.length-1];if(acc>ds*.35)out.push({x:last[0],z:last[1]});else out[out.length-1]={x:last[0],z:last[1]};return out}
+const segX=(a,b,c,d)=>{const o=(p,q,r)=>(q.x-p.x)*(r.z-p.z)-(q.z-p.z)*(r.x-p.x);return o(a,b,c)*o(a,b,d)<0&&o(c,d,a)*o(c,d,b)<0};
+
+// ======================= renderer / scene =======================
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.outputEncoding=THREE.sRGBEncoding;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();const SKY=new THREE.Color(0x9cc3e6);scene.background=SKY;scene.fog=new THREE.Fog(SKY.clone().convertSRGBToLinear(),200,520);
+const cam=new THREE.PerspectiveCamera(48,1,.2,1600);
+scene.add(new THREE.HemisphereLight(0xe8f1ff,0x8f7d5c,.75));
+const sun=new THREE.DirectionalLight(0xffeed6,1.45);sun.castShadow=true;sun.shadow.mapSize.set(4096,4096);sun.shadow.bias=-.0003;sun.shadow.normalBias=.035;scene.add(sun);scene.add(sun.target);
+const controls=new THREE.OrbitControls(cam,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=.08;controls.maxPolarAngle=Math.PI*.495;controls.screenSpacePanning=false;
+const MAXANI=renderer.capabilities.getMaxAnisotropy();
+
+// ======================= procedural PBR textures (albedo + normal + roughness, tileable) =======================
+const TX=(()=>{
+ const vn=(x,y,p,s)=>{const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi,u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf),m=a=>((a%p)+p)%p;
+  const a=ihash(m(xi),m(yi),s),b=ihash(m(xi+1),m(yi),s),c=ihash(m(xi),m(yi+1),s),d=ihash(m(xi+1),m(yi+1),s);return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v};
+ const fbm=(u,v,p,s,o=3)=>{let t=0,a=.5,f=1,n=0;for(let i=0;i<o;i++){t+=a*vn(u*p*f,v*p*f,p*f,s+i*31);n+=a;a*=.5;f*=2}return t/n};
+ let F1=0,F2=0,FID=0;
+ const vor=(u,v,n,s,jit,ax=1)=>{const x=u*n,y=v*n,xi=Math.floor(x),yi=Math.floor(y);F1=F2=9;
+  for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){const cx=xi+i,cy=yi+j,wx=((cx%n)+n)%n,wy=((cy%n)+n)%n;
+   const dx=(cx+.5+(ihash(wx,wy,s)-.5)*jit-x)*ax,dy=cy+.5+(ihash(wx,wy,s+7)-.5)*jit-y,d=Math.hypot(dx,dy);
+   if(d<F1){F2=F1;F1=d;FID=wy*n+wx}else if(d<F2)F2=d}};
+ function make(N,fn,ns){const al=new Uint8ClampedArray(N*N*4),h=new Float32Array(N*N),ro=new Uint8ClampedArray(N*N*4),o={r:0,g:0,b:0,h:0,ro:1};
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){fn((x+.5)/N,(y+.5)/N,o);const i=y*N+x;al[i*4]=o.r*255;al[i*4+1]=o.g*255;al[i*4+2]=o.b*255;al[i*4+3]=255;h[i]=o.h;ro[i*4]=ro[i*4+1]=ro[i*4+2]=o.ro*255;ro[i*4+3]=255}
+  const nm=new Uint8ClampedArray(N*N*4),g=(x,y)=>h[((y+N)%N)*N+((x+N)%N)],k=ns*N/512;
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){const dx=(g(x+1,y)-g(x-1,y))*k,dy=(g(x,y+1)-g(x,y-1))*k,l=Math.hypot(dx,dy,1),i=(y*N+x)*4;
+   nm[i]=(-dx/l*.5+.5)*255;nm[i+1]=(dy/l*.5+.5)*255;nm[i+2]=(1/l*.5+.5)*255;nm[i+3]=255}
+  const T=(d,srgb)=>{const c=document.createElement('canvas');c.width=c.height=N;c.getContext('2d').putImageData(new ImageData(d,N,N),0,0);
+   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=MAXANI;if(srgb)t.encoding=THREE.sRGBEncoding;return t};
+  return{a:T(al,true),n:T(nm),r:T(ro)}}
+ const mix3=(o,c,k)=>{o.r=lerp(o.r,c[0],k);o.g=lerp(o.g,c[1],k);o.b=lerp(o.b,c[2],k)};
+ // calade: river cobbles set in lime/sand, with a dressed transverse band (pas d'âne edge) every tile (1.6 m)
+ const cobble=make(1024,(u,v,o)=>{const band=.085;
+  if(v<band){const k=Math.floor(u*6),fu=u*6-k,fv=v/band,e=Math.min(Math.min(fu,1-fu)*.267,Math.min(fv,1-fv)*.136),m=sstep(.003,.012,e),t=.86+.22*ihash(k,1,5),w=fbm(u,v,8,3);
+   o.r=lerp(.5,.8*t,m)*(.9+.2*w);o.g=lerp(.45,.73*t,m)*(.9+.2*w);o.b=lerp(.37,.6*t,m)*(.9+.2*w);o.h=m*(.68+.2*w);o.ro=m?.62:.95;return}
+  vor(u,v,12,11,.85);const e=F2-F1,m=sstep(.05,.15,e),dome=Math.max(0,1-F1*F1*1.3),q=ihash(FID,2,9),t=.82+.3*ihash(FID,3,9),w=fbm(u,v,16,5);
+  const pal=q<.3?[.5,.52,.53]:q<.6?[.66,.6,.5]:q<.85?[.56,.46,.36]:[.4,.39,.37];
+  const mo=[.47,.42,.35].map(c=>c*(.8+.35*w));o.r=lerp(mo[0],pal[0]*t*(.9+.2*w),m);o.g=lerp(mo[1],pal[1]*t*(.9+.2*w),m);o.b=lerp(mo[2],pal[2]*t*(.9+.2*w),m);
+  const ed=.72+.28*sstep(.05,.3,e);o.r*=ed;o.g*=ed;o.b*=ed;o.h=m*(.4+.6*dome)*(.85+.3*q)+w*.06;o.ro=m?lerp(.42,.7,w):.96},2.4);
+ // dressed limestone slabs in courses of varying height (dalles); options: rows, equal rows, palette
+ function slabs(N,rows,eq,pal,seed,lenMin,lenMax,ns,wear){const ry=[0];for(let r=0;r<rows;r++)ry.push(ry[r]+(eq?1:.6+.8*ihash(r,seed,1)));const tot=ry[rows];for(let r=0;r<=rows;r++)ry[r]/=tot;
+  const cols=[];for(let r=0;r<rows;r++){const b=[0];let u=0;while(u<1){const l=lenMin+(lenMax-lenMin)*ihash(r,b.length,seed+3);if(1-u-l<lenMin*.7){u=1}else u+=l;b.push(Math.min(1,u))}cols.push({b,off:ihash(r,seed,9)})}
+  return make(N,(u,v,o)=>{let r=0;while(r<rows-1&&v>=ry[r+1])r++;const C=cols[r],uu=(u+C.off)%1;let k=0;while(k<C.b.length-2&&uu>=C.b[k+1])k++;
+   const ev=Math.min(v-ry[r],ry[r+1]-v),eu=Math.min(uu-C.b[k],C.b[k+1]-uu),e=Math.min(ev,eu),m=sstep(.002,.008,e),bev=sstep(.0,.02,e);
+   const id=r*97+k,t=.84+.24*ihash(id,4,seed),w=fbm(u,v,10,seed),st=fbm(u,v,4,seed+5,4);
+   o.r=lerp(pal[0]*.55,pal[0]*t*(.86+.25*w),m)*(1-.12*sstep(.55,.8,st));o.g=lerp(pal[1]*.55,pal[1]*t*(.86+.25*w),m)*(1-.13*sstep(.55,.8,st));o.b=lerp(pal[2]*.55,pal[2]*t*(.86+.25*w),m)*(1-.15*sstep(.55,.8,st));
+   o.h=m*(.55+.25*bev)+w*wear;o.ro=m?lerp(.5,.8,w):.95},ns)}
+ const flag=slabs(1024,6,false,[.78,.72,.62],21,.14,.32,1.6,.12);
+ const tread=slabs(512,5,false,[.8,.75,.66],33,.2,.5,1.4,.08);
+ const riser=slabs(512,10,true,[.74,.68,.58],45,.18,.42,1.2,.1);
+ const gutter=slabs(256,4,true,[.56,.55,.52],57,1.1,1.2,1.4,.06);
+ // moellons: rubble retaining-wall masonry, lime mortar and worn lime-wash patches
+ const rubble=make(1024,(u,v,o)=>{vor(u,v,7,71,.9,.62);const e=F2-F1,m=sstep(.07,.17,e),dome=Math.max(0,1-F1*F1*1.6),q=ihash(FID,5,71),t=.8+.3*ihash(FID,6,71),w=fbm(u,v,12,72);
+  const pal=q<.4?[.66,.6,.5]:q<.75?[.58,.52,.43]:[.52,.5,.47];const mo=[.76,.72,.64];
+  o.r=lerp(mo[0],pal[0]*t*(.88+.24*w),m);o.g=lerp(mo[1],pal[1]*t*(.88+.24*w),m);o.b=lerp(mo[2],pal[2]*t*(.88+.24*w),m);
+  o.h=m*(.45+.55*dome)+w*.08;const ww=sstep(.56,.72,fbm(u,v,3,73,4));mix3(o,[.93,.91,.86],ww*.85);o.h=lerp(o.h,.55+o.h*.25,ww*.65);o.ro=.9},2.6);
+ // ردم: compacted fill (tuf) with gravel
+ const fill=make(512,(u,v,o)=>{const w=fbm(u,v,8,81,4),w2=fbm(u,v,24,82);vor(u,v,40,83,.9);const peb=ihash(FID,1,83)<.45&&F1<.32;
+  o.r=lerp(.6,.5,w)*(.9+.2*w2);o.g=lerp(.49,.4,w)*(.9+.2*w2);o.b=lerp(.35,.29,w)*(.9+.2*w2);o.h=.3+w2*.25;o.ro=.97;
+  if(peb){const t=.7+.5*ihash(FID,2,83),k=1-F1/.32;mix3(o,[.72*t,.68*t,.6*t],sstep(0,.25,k));o.h=.5+.45*k;o.ro=.8}
+  const cr=Math.abs(fbm(u,v,5,84,4)-.5);if(cr<.008){o.r*=.7;o.g*=.7;o.b*=.7;o.h-=.2}},1.8);
+ const plaster=make(512,(u,v,o)=>{const w=fbm(u,v,6,91,4),w2=fbm(u,v,48,92);const c=.9+.06*w;o.r=c*.98;o.g=c*.955;o.b=c*.9;
+  const d=sstep(.6,.8,fbm(u,v,3,93,3));o.r-=d*.12;o.g-=d*.13;o.b-=d*.15;o.h=w*.5+w2*.25;o.ro=.88},.7);
+ const terr=make(512,(u,v,o)=>{const g=fbm(u,v,6,101,4),w2=fbm(u,v,40,102);vor(u,v,60,103,.9);
+  const soil=[.55,.46,.34],dry=[.62,.6,.4],grn=[.36,.45,.24];const k=sstep(.42,.62,g);o.r=lerp(soil[0],dry[0],k);o.g=lerp(soil[1],dry[1],k);o.b=lerp(soil[2],dry[2],k);
+  if(ihash(FID,1,103)<.3&&F1<.3)mix3(o,grn,.7);const t=.88+.24*w2;o.r*=t;o.g*=t;o.b*=t;o.h=g*.5+w2*.3;o.ro=.97},1);
+ return{cobble,flag,tread,riser,gutter,rubble,fill,plaster,terr}})();
+const DS2=THREE.DoubleSide;
+const po=k=>({polygonOffset:true,polygonOffsetFactor:-k,polygonOffsetUnits:-k*2});
+const M=(s,ns,o={})=>new THREE.MeshStandardMaterial(Object.assign({map:s.a,normalMap:s.n,roughnessMap:s.r,roughness:1,metalness:0,vertexColors:true,side:DS2,normalScale:new THREE.Vector2(ns,ns)},o));
+const MAT={ramp:[M(TX.flag,1.1,po(3)),M(TX.cobble,1.5,po(2)),M(TX.cobble,1.5,po(1))],tread:[M(TX.tread,1.1,po(3)),M(TX.tread,1.1,po(2)),M(TX.tread,1.1,po(1))],
+ gut:[M(TX.gutter,1,po(3)),M(TX.gutter,1,po(2)),M(TX.gutter,1,po(1))],disc:[M(TX.flag,1.1,po(4)),M(TX.cobble,1.5,po(4)),M(TX.cobble,1.5,po(4))],
+ riser:M(TX.riser,1.1),skirt:M(TX.rubble,1.5),parapet:M(TX.plaster,.6),pad:M(TX.fill,1.3),lotwall:M(TX.rubble,1.5),coping:M(TX.riser,1),terr:M(TX.terr,1),rampart:M(TX.rubble,1.7)};
+const MSEA=new THREE.MeshStandardMaterial({color:0x2c6a86,roughness:.18,metalness:.05,normalMap:TX.plaster.n,normalScale:new THREE.Vector2(.25,.25)});
+MSEA.normalMap=TX.plaster.n.clone();MSEA.normalMap.repeat.set(60,60);MSEA.normalMap.needsUpdate=true;
+
+// ======================= geometry builder =======================
+class GB{constructor(){this.P=[];this.U=[];this.C=[]}
+ v(a){this.P.push(a[0],a[1],a[2]);this.U.push(a[3],a[4]);this.C.push(a[5],a[6],a[7])}
+ tri(a,b,c){this.v(a);this.v(b);this.v(c)}
+ quad(a,b,c,d){this.tri(a,b,c);this.tri(a,c,d)}
+ mesh(mat,par,cast=true){if(!this.P.length)return null;const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(this.P,3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute(this.U,2));g.setAttribute('color',new THREE.Float32BufferAttribute(this.C,3));g.computeVertexNormals();
+  const m=new THREE.Mesh(g,mat);m.castShadow=cast;m.receiveShadow=true;par.add(m);return m}}
+const V=(x,y,z,u,v,c)=>[x,y,z,u,v,c[0],c[1],c[2]];
+const tone=(base,k,s)=>{const t=1+(ihash(s|0,7,13)-.5)*2*k;return [base[0]*t,base[1]*t,base[2]*t]};
+const sh=(c,k)=>[c[0]*k,c[1]*k,c[2]*k];
+
+// ======================= state =======================
+let group=null,poly=[],nodes=[],edges=[],lots=[],gates={},tourPts=[],FG=null,lotLines=null,parapetGroup=null,rampartGroup=null,stats={};
+
+// ---------------- coarse routing grid (1 m) ----------------
+const G={};
+function makeGrid(){const S=P.S,ext=Math.ceil(S*.56);G.cs=1;G.o=-ext;G.N=2*ext;const n=G.N*G.N;
+ G.h=new Float32Array(n);G.in=new Uint8Array(n);G.sd=new Float32Array(n);G.road=new Uint8Array(n);G.dist=new Float32Array(n);G.wig=new Float32Array(n);G.tried=new Uint8Array(n);
+ for(let j=0;j<G.N;j++)for(let i=0;i<G.N;i++){const k=j*G.N+i,x=cx(k),z=cz(k);G.h[k]=H(x,z);G.sd[k]=psd(poly,x,z);G.in[k]=G.sd[k]>1.4?1:0;
+  G.wig[k]=.78+.5*(.5+.5*Math.sin(x*.07+ph3)*Math.cos(z*.061+ph1))+.12*Math.sin(x*.23+z*.19+ph2)}}
+const cx=k=>G.o+((k%G.N)+.5)*G.cs,cz=k=>G.o+(Math.floor(k/G.N)+.5)*G.cs;
+const cellOf=(x,z)=>clamp(Math.floor((z-G.o)/G.cs),0,G.N-1)*G.N+clamp(Math.floor((x-G.o)/G.cs),0,G.N-1);
+function distXf(){const N=G.N,d=G.dist,r2=Math.SQRT2;for(let k=0;k<N*N;k++)d[k]=G.road[k]?0:1e6;
+ for(let j=0;j<N;j++)for(let i=0;i<N;i++){const k=j*N+i;let v=d[k];if(i>0)v=Math.min(v,d[k-1]+1);if(j>0){v=Math.min(v,d[k-N]+1);if(i>0)v=Math.min(v,d[k-N-1]+r2);if(i<N-1)v=Math.min(v,d[k-N+1]+r2)}d[k]=v}
+ for(let j=N-1;j>=0;j--)for(let i=N-1;i>=0;i--){const k=j*N+i;let v=d[k];if(i<N-1)v=Math.min(v,d[k+1]+1);if(j<N-1){v=Math.min(v,d[k+N]+1);if(i<N-1)v=Math.min(v,d[k+N+1]+r2);if(i>0)v=Math.min(v,d[k+N-1]+r2)}d[k]=v}}
+function rasterDisc(x,z,r){const i0=Math.floor((x-r-G.o)/G.cs),i1=Math.floor((x+r-G.o)/G.cs),j0=Math.floor((z-r-G.o)/G.cs),j1=Math.floor((z+r-G.o)/G.cs);
+ for(let j=Math.max(0,j0);j<=Math.min(G.N-1,j1);j++)for(let i=Math.max(0,i0);i<=Math.min(G.N-1,i1);i++){const k=j*G.N+i;if(Math.hypot(cx(k)-x,cz(k)-z)<=r)G.road[k]=1}}
+function rasterEdge(e){const r=CLS[e.cls].w/2+.5;for(let i=0;i<e.pts.length;i+=1)rasterDisc(e.pts[i].x,e.pts[i].z,r)}
+
+// binary-heap Dijkstra / A* over 16-neighbourhood with grade, wiggle and clearance costs
+const DIRS=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1],[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]];
+function route(si,o){const N=G.N,n=N*N,g=new Float32Array(n).fill(Infinity),prev=new Int32Array(n).fill(-1),closed=new Uint8Array(n);
+ const hk=[],hv=[],push=(k,v)=>{hk.push(k);hv.push(v);let i=hk.length-1;while(i>0){const p=(i-1)>>1;if(hv[p]<=hv[i])break;[hk[p],hk[i]]=[hk[i],hk[p]];[hv[p],hv[i]]=[hv[i],hv[p]];i=p}};
+ const pop=()=>{const k=hk[0],lk=hk.pop(),lv=hv.pop();if(hk.length){hk[0]=lk;hv[0]=lv;let i=0;for(;;){const l=2*i+1,r=l+1;let m=i;if(l<hk.length&&hv[l]<hv[m])m=l;if(r<hk.length&&hv[r]<hv[m])m=r;if(m===i)break;[hk[m],hk[i]]=[hk[i],hk[m]];[hv[m],hv[i]]=[hv[i],hv[m]];i=m}}return k};
+ const sx=cx(si),sz=cz(si),tx=o.target!=null?cx(o.target):0,tz=o.target!=null?cz(o.target):0,heur=k=>o.target!=null?Math.hypot(cx(k)-tx,cz(k)-tz)*.75:0;
+ const C=CLS[o.cls],kG=o.kG??C.kG,kS=o.kS??C.kS,clr=o.clr??C.clr,excl=o.excl||0;
+ g[si]=0;push(si,heur(si));let end=-1,pops=0;
+ while(hk.length&&pops<n*2){const k=pop();if(closed[k])continue;closed[k]=1;pops++;
+  const kx=cx(k),kz=cz(k);
+  if(o.target!=null&&Math.hypot(kx-tx,kz-tz)<=1.6){end=k;break}
+  if(o.roadEnd!==false&&G.road[k]&&Math.hypot(kx-sx,kz-sz)>excl&&!(o.noEnd&&o.noEnd.some(q=>Math.hypot(kx-q[0],kz-q[1])<q[2]))){end=k;break}
+  const i=k%N,j=(k-i)/N;
+  for(const d of DIRS){const ni=i+d[0],nj=j+d[1];if(ni<0||nj<0||ni>=N||nj>=N)continue;const nk=nj*N+ni;if(closed[nk])continue;
+   if(!G.in[nk]&&!G.road[nk])continue;if(o.forbid&&o.forbid[nk])continue;
+   if(Math.abs(d[0])+Math.abs(d[1])===3){const mk=(j+Math.round(d[1]/2))*N+(i+Math.round(d[0]/2));if(!G.in[mk]&&!G.road[mk])continue}
+   const L=Math.hypot(d[0],d[1]),gr=Math.abs(G.h[nk]-G.h[k])/L;if(gr>.6)continue;
+   let c=L*(1+kG*gr*gr+(gr>GRAMP?kS:0))*G.wig[nk];const dd=G.dist[nk];if(dd>0&&dd<clr)c+=L*5*(1-dd/clr);
+   const ng=g[k]+c;if(ng<g[nk]){g[nk]=ng;prev[nk]=k;push(nk,ng+heur(nk))}}}
+ if(end<0)return null;const cells=[];for(let k=end;k>=0;k=prev[k])cells.push(k);cells.reverse();return cells}
+
+// ---------------- graph ----------------
+function addNode(x,z,kind,o={}){nodes.push(Object.assign({id:nodes.length,x,z,kind,rr:0,h:0,r:1},o));return nodes.length-1}
+function newEdge(a,b,pts,cls,ph){const e={id:edges.length,a,b,pts,cls,ph:ph??R()*6.28,dead:false};measure(e);edges.push(e);return e}
+function measure(e){e.cum=[0];for(let i=1;i<e.pts.length;i++)e.cum.push(e.cum[i-1]+Math.hypot(e.pts[i].x-e.pts[i-1].x,e.pts[i].z-e.pts[i-1].z));e.L=e.cum[e.cum.length-1];
+ let a=1e9,b=1e9,c=-1e9,d=-1e9;for(const p of e.pts){a=Math.min(a,p.x);b=Math.min(b,p.z);c=Math.max(c,p.x);d=Math.max(d,p.z)}e.bb=[a,b,c,d]}
+function resolveEnd(k){const x=cx(k),z=cz(k);let bn=-1,bd=1e9,be=null,bi=0,bed=1e9;
+ for(const n of nodes){if(n.dead)continue;const d=Math.hypot(n.x-x,n.z-z)-n.rr;if(d<bd){bd=d;bn=n.id}}
+ for(const e of edges){if(e.dead||x<e.bb[0]-6||x>e.bb[2]+6||z<e.bb[1]-6||z>e.bb[3]+6)continue;const hw=CLS[e.cls].w/2;
+  for(let i=0;i<e.pts.length;i++){const d=Math.hypot(e.pts[i].x-x,e.pts[i].z-z)-hw;if(d<bed){bed=d;be=e;bi=i}}}
+ if(bn>=0&&(bd<=bed+.3||!be))return{node:bn};if(!be)return null;
+ const snap=3.5+CLS[be.cls].w*.5;if(be.cum[bi]<snap)return{node:be.a};if(be.L-be.cum[bi]<snap)return{node:be.b};
+ const p=be.pts[bi],J=addNode(p.x,p.z,'junc'),q0=be.pts[Math.max(0,bi-2)],q1=be.pts[Math.min(be.pts.length-1,bi+2)],tl=Math.hypot(q1.x-q0.x,q1.z-q0.z)||1;
+ be.dead=true;newEdge(be.a,J,be.pts.slice(0,bi+1),be.cls,be.ph);newEdge(J,be.b,be.pts.slice(bi),be.cls,be.ph+1.3);
+ return{node:J,n:[-(q1.z-q0.z)/tl,(q1.x-q0.x)/tl]}}
+function overlaps(pts,ex){const A=pts[0],B=pts[pts.length-1];
+ for(const p of pts){if(Math.hypot(p.x-A.x,p.z-A.z)<ex||Math.hypot(p.x-B.x,p.z-B.z)<ex)continue;if(G.road[cellOf(p.x,p.z)])return true}
+ let bb=[1e9,1e9,-1e9,-1e9];for(const p of pts){bb[0]=Math.min(bb[0],p.x);bb[1]=Math.min(bb[1],p.z);bb[2]=Math.max(bb[2],p.x);bb[3]=Math.max(bb[3],p.z)}
+ for(const e of edges){if(e.dead||e.bb[0]>bb[2]||e.bb[2]<bb[0]||e.bb[1]>bb[3]||e.bb[3]<bb[1])continue;
+  for(let j=0;j<e.pts.length-1;j++){const q=e.pts[j];if(Math.hypot(q.x-A.x,q.z-A.z)<2||Math.hypot(q.x-B.x,q.z-B.z)<2)continue;
+   for(let i=0;i<pts.length-1;i++){const p=pts[i];if(Math.hypot(p.x-A.x,p.z-A.z)<1.5||Math.hypot(p.x-B.x,p.z-B.z)<1.5)continue;if(segX(pts[i],pts[i+1],q,e.pts[j+1]))return true}}}
+ return false}
+// smooth a grid path into a street centreline; junction approaches are forced perpendicular to the host street
+function buildEdge(na,nb,cells,cls,ra,rb){if(na===nb)return null;
+ if(edges.some(e=>!e.dead&&((e.a===na&&e.b===nb)||(e.a===nb&&e.b===na))))return null;
+ const A=nodes[na],B=nodes[nb],raw=cells.map(k=>[cx(k),cz(k)]),D=Math.hypot(B.x-A.x,B.z-A.z);
+ let mid=dp(raw,.75).slice(1,-1).filter(p=>Math.hypot(p[0]-A.x,p[1]-A.z)>2.2&&Math.hypot(p[0]-B.x,p[1]-B.z)>2.2);
+ const ctrl=[[A.x,A.z]],app=(r,N,far)=>{const s=Math.sign((far[0]-N.x)*r.n[0]+(far[1]-N.z)*r.n[1])||1,l=Math.min(3.2,.3*D+.6);return [N.x+r.n[0]*s*l,N.z+r.n[1]*s*l]};
+ const fA=mid[0]||[B.x,B.z],fB=mid[mid.length-1]||[A.x,A.z];
+ if(ra&&ra.n)ctrl.push(app(ra,A,fA));ctrl.push(...mid);if(rb&&rb.n)ctrl.push(app(rb,B,fB));ctrl.push([B.x,B.z]);
+ let pts=resample(catmull(ctrl,.25),.5);
+ if(pts.length<5||overlaps(pts,3.6)){pts=resample(ctrl,.5);if(pts.length<5||overlaps(pts,3.6))return null}
+ const e=newEdge(na,nb,pts,cls);rasterEdge(e);distXf();return e}
+function nearestInside(x,z){let k=cellOf(x,z);if(G.in[k])return k;let best=k,bd=1e9;for(let i=0;i<G.N*G.N;i++)if(G.in[i]){const d=Math.hypot(cx(i)-x,cz(i)-z);if(d<bd){bd=d;best=i}}return best}
+function addGate(name,x,z,r,kind='gate'){const k=nearestInside(x,z),id=addNode(cx(k),cz(k),kind,{rr:r,name,gr:r});rasterDisc(nodes[id].x,nodes[id].z,r);return id}
+function connect(fromNode,o){const n=nodes[fromNode],cells=route(cellOf(n.x,n.z),o);if(!cells)return null;
+ let end;if(o.target!=null&&o.tnode!=null&&Math.hypot(cx(cells[cells.length-1])-cx(o.target),cz(cells[cells.length-1])-cz(o.target))<=1.6)end={node:o.tnode};else end=resolveEnd(cells[cells.length-1]);
+ if(!end)return null;return buildEdge(fromNode,end.node,cells,o.cls,null,end)}
+
+// ---------------- network synthesis ----------------
+function makeRampartPoly(){const S=P.S,A=[(R()-.5)*S*.08,S*.47],BL=[-S*.47,-S*.42],BR=[S*.47,-S*.42],C=[0,(A[1]+2*BL[1])/3],cs=[BL,BR,A],pts=[];
+ for(let k=0;k<3;k++){const a=cs[k],b=cs[(k+1)%3],L=Math.hypot(b[0]-a[0],b[1]-a[1]),n=Math.ceil(L/3);let nx=(b[1]-a[1])/L,nz=-(b[0]-a[0])/L;
+  if(nx*((a[0]+b[0])/2-C[0])+nz*((a[1]+b[1])/2-C[1])<0){nx=-nx;nz=-nz}const amp=(k===0?.012:.055)*L,q=R()*6;
+  for(let i=0;i<n;i++){const t=i/n,b2=amp*Math.sin(Math.PI*t)+.9*Math.sin(t*9+q)*Math.sin(Math.PI*t);pts.push([lerp(a[0],b[0],t)+nx*b2,lerp(a[1],b[1],t)+nz*b2])}}
+ let p=pts;for(let it=0;it<2;it++){const q=[];for(let i=0;i<p.length;i++){const a=p[i],b=p[(i+1)%p.length];q.push([.75*a[0]+.25*b[0],.75*a[1]+.25*b[1]],[.25*a[0]+.75*b[0],.25*a[1]+.75*b[1]])}p=q}
+ return p}
+function synth(){const S=P.S;nodes=[];edges=[];makeGrid();
+ const apex=poly.reduce((m,p)=>p[1]>m[1]?p:m,poly[0]),cen=[0,-S*.1],inset=(p,d)=>{const dx=cen[0]-p[0],dz=cen[1]-p[1],l=Math.hypot(dx,dz);return [p[0]+dx/l*d,p[1]+dz/l*d]};
+ const bl=poly.reduce((m,p)=>p[0]-p[1]*.3<m[0]-m[1]*.3?p:m,poly[0]),brr=poly.reduce((m,p)=>p[0]+p[1]*.3>m[0]+m[1]*.3?p:m,poly[0]);
+ const T=inset(apex,3.4),W=inset(bl,6),E=inset(brr,6);let bz=-1e9;for(const p of poly)if(Math.abs(p[0])<S*.08&&p[1]<0)bz=Math.max(bz,p[1]);
+ gates.T=addGate('باب جديد',T[0],T[1],2.8);gates.W=addGate('باب الوادي',W[0],W[1],2.8);gates.E=addGate('باب عزون',E[0],E[1],2.8);
+ gates.B=addGate('ساحة باب البحر',(R()-.5)*S*.06,bz+6.6,6.5,'plaza');distXf();
+ const tc=id=>cellOf(nodes[id].x,nodes[id].z);
+ // primary arteries: Bab Jdid ↔ Bab Azoun, Bab el Oued ↔ Bab Jdid, sea plaza up the spine, lower contour street
+ connect(gates.T,{cls:0,target:tc(gates.E),tnode:gates.E,roadEnd:false});
+ connect(gates.W,{cls:0,target:tc(gates.T),tnode:gates.T,excl:8});
+ connect(gates.B,{cls:0,target:tc(gates.T),tnode:gates.T,excl:10});
+ connect(gates.W,{cls:0,target:tc(gates.B),tnode:gates.B,excl:8,kG:28,kS:1.5});
+ connect(gates.B,{cls:0,target:tc(gates.E),tnode:gates.E,excl:10,kG:28,kS:1.5});
+ // secondary through-alleys, then dead-end derbs until every point of every block is within lot depth of a street
+ const Dsec=lerp(26,14,P.branch),Dimp=lerp(13.5,8.5,P.dens);
+ const deepest=()=>{let b=-1,bv=0;for(let k=0;k<G.N*G.N;k++)if(G.in[k]&&!G.tried[k]&&G.sd[k]>2.5&&G.dist[k]>bv){bv=G.dist[k];b=k}return[b,bv]};
+ const tried=k=>{const x=cx(k),z=cz(k);for(let j=-3;j<=3;j++)for(let i=-3;i<=3;i++){const q=cellOf(x+i,z+j);G.tried[q]=1}};
+ const grow=(cls,D,through)=>{for(let guard=0;guard<260;guard++){const [k,v]=deepest();if(k<0||v<D)break;
+   const c1=route(k,{cls});if(!c1||c1.length<4){tried(k);continue}
+   let c2=null;if(R()<through){const fb=new Uint8Array(G.N*G.N),hx=cx(k),hz=cz(k);
+    for(const q of c1){const x=cx(q),z=cz(q);if(Math.hypot(x-hx,z-hz)<2.5)continue;for(let j=-3;j<=3;j++)for(let i=-3;i<=3;i++)fb[cellOf(x+i,z+j)]=1}fb[k]=0;
+    const l=c1[c1.length-1];c2=route(k,{cls,forbid:fb,noEnd:[[cx(l),cz(l),14]]});if(c2&&c2.length<4)c2=null}
+   const r1=resolveEnd(c1[c1.length-1]);if(!r1){tried(k);continue}
+   let e=null;
+   if(c2){const r2=resolveEnd(c2[c2.length-1]);if(r2&&r2.node!==r1.node)e=buildEdge(r1.node,r2.node,c1.slice().reverse().concat(c2.slice(1)),cls,r1,r2)}
+   if(!e){const s=addNode(cx(k),cz(k),'end');e=buildEdge(s,r1.node,c1,cls,null,r1);if(!e)nodes[s].dead=true}
+   if(!e)tried(k)}};
+ grow(1,Dsec,.4+P.loops*.75);grow(2,Dimp,P.loops*.35);
+ // clean-up: drop dead pieces, merge degree-2 junctions left by rejected joins
+ for(let changed=true;changed;){changed=false;const deg=new Map();for(const e of edges)if(!e.dead)for(const n of [e.a,e.b])deg.set(n,(deg.get(n)||[]).concat([e]));
+  for(const [n,es] of deg){if(nodes[n].kind!=='junc'||es.length!==2||es[0].cls!==es[1].cls)continue;const [e1,e2]=es;if(e1===e2)continue;
+   const p1=e1.b===n?e1.pts:e1.pts.slice().reverse(),p2=e2.a===n?e2.pts:e2.pts.slice().reverse(),a=e1.b===n?e1.a:e1.b,b=e2.a===n?e2.b:e2.a;if(a===b)continue;
+   e1.dead=e2.dead=true;nodes[n].dead=true;newEdge(a,b,p1.concat(p2.slice(1)),e1.cls,e1.ph);changed=true;break}}
+ edges=edges.filter(e=>!e.dead);edges.forEach((e,i)=>e.id=i);
+ const deg=new Array(nodes.length).fill(0);for(const e of edges){deg[e.a]++;deg[e.b]++}nodes.forEach((n,i)=>{n.deg=deg[i];n.inc=edges.filter(e=>e.a===i||e.b===i)})}
+
+// ---------------- vertical design: node levels, longitudinal profiles, stairs ----------------
+const wAt=(e,s)=>{const C=CLS[e.cls];return C.w*(1+C.v*(.65*Math.sin(s*.21+e.ph)+.35*Math.sin(s*.57+e.ph*2))*sstep(0,3,Math.min(s,e.L-s)))};
+function frameAt(e,s){const c=e.cum,n=c.length;let i=clamp(Math.floor(s/.5),0,n-2);while(i<n-2&&c[i+1]<s)i++;while(i>0&&c[i]>s)i--;
+ const t=clamp((s-c[i])/((c[i+1]-c[i])||1),0,1),p=e.pts,x=lerp(p[i].x,p[i+1].x,t),z=lerp(p[i].z,p[i+1].z,t);
+ const a=p[Math.max(0,i-2)],b=p[Math.min(n-1,i+3)],l=Math.hypot(b.x-a.x,b.z-a.z)||1;return{x,z,tx:(b.x-a.x)/l,tz:(b.z-a.z)/l,i,t}}
+function fAt(e,s){const f=frameAt(e,s);return lerp(e.f[f.i],e.f[f.i+1],f.t)}
+function yAt(e,s){for(const r of e.runs)if(s<=r.s1+1e-9){if(r.t===0)return fAt(e,s);let k=0;while(k<r.ris.length&&r.ris[k]<s-1e-9)k++;return r.h0+r.rise*k}return e.f[e.f.length-1]}
+function levels(){
+ for(const n of nodes){if(n.dead||!n.deg)continue;const W=n.inc.reduce((m,e)=>Math.max(m,CLS[e.cls].w),0);
+  n.r=n.kind==='gate'||n.kind==='plaza'?n.gr:n.deg===1?Math.max(1.2,W/2+.35):W/2+.3;n.flat=n.r+.6;
+  const rr=n.kind==='plaza'?4:1.5;let s=0;for(let k=0;k<9;k++){const a=k*.7;s+=H(n.x+Math.cos(a)*rr*(k?1:0),n.z+Math.sin(a)*rr*(k?1:0))}n.h=s/9}
+ for(let it=0;it<80;it++)for(const e of edges){const A=nodes[e.a],B=nodes[e.b],av=Math.max(.5,e.L-Math.min(A.flat,e.L*.35)-Math.min(B.flat,e.L*.35)),mx=GMAX*.9*av,d=B.h-A.h;
+  if(Math.abs(d)>mx){const x=(Math.abs(d)-mx)/2*Math.sign(d);A.h+=x;B.h-=x}}
+ stats.steps=0;stats.flights=0;
+ for(const e of edges){const n=e.pts.length,c=e.cum,L=e.L,A=nodes[e.a],B=nodes[e.b],fa=Math.min(A.flat,L*.35),fb=Math.min(B.flat,L*.35);
+  let f=e.pts.map(p=>H(p.x,p.z));for(let it=0;it<3;it++){const g=f.slice();for(let i=0;i<n;i++){let s=0,k2=0;for(let k=-5;k<=5;k++){const j=i+k;if(j>=0&&j<n){s+=g[j];k2++}}f[i]=s/k2}}
+  let ia=0;while(ia<n-1&&c[ia]<fa)ia++;let ib=n-1;while(ib>0&&c[ib]>L-fb)ib--;const da=A.h-f[ia],db=B.h-f[ib];
+  for(let i=0;i<n;i++){if(c[i]<=fa)f[i]=A.h;else if(c[i]>=L-fb)f[i]=B.h;else f[i]+=lerp(da,db,(c[i]-fa)/Math.max(.01,L-fb-fa))}
+  for(let it=0;it<4;it++){for(let i=1;i<n;i++){const l=GMAX*(c[i]-c[i-1]);f[i]=clamp(f[i],f[i-1]-l,f[i-1]+l)}for(let i=n-2;i>=0;i--){const l=GMAX*(c[i+1]-c[i]);f[i]=clamp(f[i],f[i+1]-l,f[i+1]+l)}}
+  e.f=f;
+  // classify intervals ramp/stair, merge short runs
+  const ty=[];for(let i=0;i<n-1;i++){const a=Math.max(0,i-2),b=Math.min(n-1,i+3),gr=Math.abs(f[b]-f[a])/Math.max(.01,c[b]-c[a]);ty.push(c[i]<fa||c[i+1]>L-fb?0:gr>=GRAMP?1:0)}
+  let runs=[];for(let i=0;i<n-1;i++){if(runs.length&&runs[runs.length-1].t===ty[i])runs[runs.length-1].i1=i+1;else runs.push({t:ty[i],i0:i,i1:i+1})}
+  for(let g=0;g<50&&runs.length>1;g++){let m=-1,ml=2.2;runs.forEach((r,k)=>{const l=c[r.i1]-c[r.i0];if(l<ml){ml=l;m=k}});if(m<0)break;
+   runs[m].t=1-runs[m].t;const q=[];for(const r of runs){if(q.length&&q[q.length-1].t===r.t)q[q.length-1].i1=r.i1;else q.push(Object.assign({},r))}runs=q}
+  e.runs=runs.map(r=>{const s0=c[r.i0],s1=c[r.i1],h0=f[r.i0],h1=f[r.i1],dh=h1-h0,o={t:r.t,s0,s1,h0,h1,ris:[],rise:0};
+   if(r.t===1&&Math.abs(dh)<.12)o.t=0;if(o.t===0)return o;
+   const Lr=s1-s0;let nr=Math.max(1,Math.round(Math.abs(dh)/RISE));if(Lr/nr<.3)nr=Math.max(nr,Math.ceil(Math.abs(dh)/.19));
+   o.rise=dh/nr;let k=Math.ceil(nr/14),land=1.2;if((Lr-(k-1)*land)/nr<.32)k=1;const per=Math.ceil(nr/k),tr=(Lr-(k-1)*land)/nr;
+   let s=s0+tr/2;for(let q=0;q<nr;q++){o.ris.push(s);s+=tr;if((q+1)%per===0&&q<nr-1)s+=land}
+   stats.steps+=nr;stats.flights+=k;return o});
+  e.runs[e.runs.length-1].s1=L+1}}
+
+// ======================= fine grid (graded surface, lot fields) =======================
+function fineGrid(){const S=P.S,gs=S<=120?.5:.6,ext=S*.56,FN=Math.ceil(2*ext/gs)+1,n=FN*FN;
+ const F={gs,o:-ext,N:FN,dr:new Float32Array(n).fill(9),own:new Int32Array(n).fill(-1),ry:new Float32Array(n),sd:new Float32Array(n),h:new Float32Array(n),blk:new Int32Array(n).fill(-1),lab:new Int32Array(n).fill(-1),y:new Float32Array(n)};
+ const B=4,bk=new Map(),key=(i,j)=>i*7919+j;
+ edges.forEach(e=>{for(let i=0;i<e.pts.length-1;i++){const a=e.pts[i],b=e.pts[i+1];for(let x=Math.floor(Math.min(a.x,b.x)/B);x<=Math.floor(Math.max(a.x,b.x)/B);x++)for(let z=Math.floor(Math.min(a.z,b.z)/B);z<=Math.floor(Math.max(a.z,b.z)/B);z++){const k=key(x,z);if(!bk.has(k))bk.set(k,[]);bk.get(k).push([e,i])}}});
+ const ndisc=nodes.filter(nd=>!nd.dead&&nd.deg);
+ for(let j=0;j<FN;j++)for(let i=0;i<FN;i++){const v=j*FN+i,x=F.o+i*gs,z=F.o+j*gs;F.h[v]=H(x,z);F.sd[v]=psd(poly,x,z);
+  if(F.sd[v]<-1)continue;const bx=Math.floor(x/B),bz=Math.floor(z/B);let best=9,own=-1,ry=0;
+  for(let q=-1;q<=1;q++)for(let w=-1;w<=1;w++){const l=bk.get(key(bx+q,bz+w));if(!l)continue;
+   for(const [e,k] of l){const a=e.pts[k],b=e.pts[k+1],dx=b.x-a.x,dz=b.z-a.z,ll=dx*dx+dz*dz,t=ll?clamp(((x-a.x)*dx+(z-a.z)*dz)/ll,0,1):0,d=Math.hypot(x-a.x-dx*t,z-a.z-dz*t),s=e.cum[k]+t*(e.cum[k+1]-e.cum[k]),dd=d-wAt(e,s)/2;
+    if(dd<best){best=dd;own=e.id;ry=s}}}
+  if(own>=0){F.ry[v]=yAt(edges[own],ry)}
+  for(const nd of ndisc){const dd=Math.hypot(x-nd.x,z-nd.z)-nd.r;if(dd<best){best=dd;own=-2-nd.id;F.ry[v]=nd.h}}
+  F.dr[v]=best;F.own[v]=own}
+ return F}
+const fidx=(x,z)=>clamp(Math.round((z-FG.o)/FG.gs),0,FG.N-1)*FG.N+clamp(Math.round((x-FG.o)/FG.gs),0,FG.N-1);
+const Gat=(x,z)=>FG.y[fidx(x,z)];
+
+// ---------------- lots: frontage seeds → block-restricted Voronoi → flat fill pads ----------------
+function makeLots(){const F=FG,N=F.N,gs=F.gs;let nb=0;
+ for(let v=0;v<N*N;v++){if(F.blk[v]>=0||F.dr[v]<=0||F.sd[v]<=0)continue;const st=[v];F.blk[v]=nb;
+  while(st.length){const u=st.pop(),i=u%N,j=(u-i)/N;for(const [di,dj] of [[1,0],[-1,0],[0,1],[0,-1]]){const a=i+di,b=j+dj;if(a<0||b<0||a>=N||b>=N)continue;const w=b*N+a;if(F.blk[w]<0&&F.dr[w]>0&&F.sd[w]>0){F.blk[w]=nb;st.push(w)}}}nb++}
+ const seeds=[],ok=(x,z)=>{const v=fidx(x,z);return F.dr[v]>.25&&F.sd[v]>.8&&!seeds.some(s=>Math.hypot(s.x-x,s.z-z)<3.4)};
+ const lw=lerp(9.5,6.5,P.dens);
+ for(const e of edges){const fa=Math.min(nodes[e.a].flat,e.L*.35),fb=Math.min(nodes[e.b].flat,e.L*.35);
+  for(const side of [1,-1]){let s=fa+1.2+R()*2;while(s<e.L-fb-1.2){const f=frameAt(e,s),hw=wAt(e,s)/2,x=f.x-f.tz*side*(hw+.6),z=f.z+f.tx*side*(hw+.6);
+    if(ok(x,z))seeds.push({x,z,e:e.id,s,side,dy:yAt(e,s),dir:[-f.tz*side,f.tx*side],cls:e.cls});s+=lw*(.7+.6*R())}}}
+ for(const n of nodes){if(n.dead||n.deg!==1||n.kind!=='end')continue;const e=n.inc[0],o=e.a===n.id?e.pts[Math.min(4,e.pts.length-1)]:e.pts[Math.max(0,e.pts.length-5)],dx=n.x-o.x,dz=n.z-o.z,l=Math.hypot(dx,dz)||1,x=n.x+dx/l*(n.r+.6),z=n.z+dz/l*(n.r+.6);
+  if(ok(x,z))seeds.push({x,z,e:e.id,s:e.a===n.id?0:e.L,side:0,dy:n.h,dir:[dx/l,dz/l],cls:e.cls,derb:true})}
+ seeds.forEach(s=>{let v=fidx(s.x,s.z);if(F.blk[v]<0){for(let k=1;k<4&&F.blk[v]<0;k++)v=fidx(s.x+s.dir[0]*k*gs,s.z+s.dir[1]*k*gs)}s.blk=F.blk[v]});
+ const byB=Array.from({length:nb},()=>[]);seeds.forEach((s,i)=>{if(s.blk>=0)byB[s.blk].push(i)});
+ // blocks without frontage seed: seed at the point nearest a street
+ for(let b=0;b<nb;b++)if(!byB[b].length){let bv=-1,bd=1e9;for(let v=0;v<N*N;v++)if(F.blk[v]===b&&F.dr[v]<bd){bd=F.dr[v];bv=v}
+  const x=F.o+(bv%N)*gs,z=F.o+Math.floor(bv/N)*gs;seeds.push({x,z,e:-1,s:0,side:0,dy:F.h[bv],dir:[0,1],cls:2,blk:b,orphan:true});byB[b].push(seeds.length-1)}
+ for(let v=0;v<N*N;v++){const b=F.blk[v];if(b<0)continue;const x=F.o+(v%N)*gs,z=F.o+Math.floor(v/N)*gs;let bd=1e9,bi=-1;for(const i of byB[b]){const d=(seeds[i].x-x)**2+(seeds[i].z-z)**2;if(d<bd){bd=d;bi=i}}F.lab[v]=bi}
+ // pad level = door level ± whole steps toward the mean natural ground (cut/fill balance), capped at 5 steps
+ const sum=new Float64Array(seeds.length),cnt=new Float64Array(seeds.length);for(let v=0;v<N*N;v++){const l=F.lab[v];if(l>=0){sum[l]+=F.h[v];cnt[l]++}}
+ lots=seeds.map((s,i)=>{const mh=cnt[i]?sum[i]/cnt[i]:s.dy,st=clamp(Math.round((mh-s.dy)/STEP),-5,5);return{id:i,seed:s,pad:s.dy+st*STEP,steps:st,cells:cnt[i]}});
+ let fillV=0,cutV=0;for(let v=0;v<N*N;v++){let y;if(F.sd[v]<=0)y=F.h[v];else if(F.dr[v]<=0)y=F.ry[v];else if(F.lab[v]>=0)y=lots[F.lab[v]].pad;else y=F.h[v];F.y[v]=y;
+  if(F.sd[v]>0){const d=(y-F.h[v])*gs*gs;if(d>0)fillV+=d;else cutV-=d}}
+ stats.fill=fillV;stats.cut=cutV;
+ // exact lot outlines: marching squares on min(street distance, rampart distance, Voronoi bisector distance)
+ for(const L of lots){const s=L.seed,bs=byB[s.blk];let i0=1e9,j0=1e9,i1=-1,j1=-1;
+  for(let v=0;v<N*N;v++)if(F.lab[v]===L.id){const i=v%N,j=(v-i)/N;i0=Math.min(i0,i);i1=Math.max(i1,i);j0=Math.min(j0,j);j1=Math.max(j1,j)}
+  if(i1<0){L.poly=null;continue}i0=Math.max(0,i0-1);j0=Math.max(0,j0-1);i1=Math.min(N-1,i1+1);j1=Math.min(N-1,j1+1);const W=i1-i0+1,Hh=j1-j0+1,fv=new Float32Array(W*Hh);
+  let lo=1e9;
+  for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++){const v=j*N+i,x=F.o+i*gs,z=F.o+j*gs;let f=Math.min(F.dr[v],F.sd[v]);
+   if(f>0){if(F.blk[v]!==s.blk)f=-.3;else for(const q of bs){if(q===L.id)continue;const o=seeds[q],dl=Math.hypot(o.x-s.x,o.z-s.z)||1e-3;f=Math.min(f,((x-o.x)**2+(z-o.z)**2-(x-s.x)**2-(z-s.z)**2)/(2*dl))}}
+   if(i===i0||j===j0||i===i1||j===j1)f=Math.min(f,-.01);fv[(j-j0)*W+(i-i0)]=f;lo=Math.min(lo,F.y[v])}
+  L.bottom=lo-.8;L.poly=contour(fv,W,Hh,F.o+i0*gs,F.o+j0*gs,gs)}
+ lots=lots.filter(L=>L.poly&&L.poly.length>=3);
+ lots.forEach((L,k)=>{L.id=k;let a=0,cxs=0,czs=0;const p=L.poly;for(let i=0;i<p.length;i++){const q=p[i],r=p[(i+1)%p.length],c=q[0]*r[1]-r[0]*q[1];a+=c;cxs+=(q[0]+r[0])*c;czs+=(q[1]+r[1])*c}
+  L.area=Math.abs(a/2);L.c=a?[cxs/(3*a),czs/(3*a)]:[L.seed.x,L.seed.z];L.buildable=L.area>=14&&!L.seed.orphan})}
+function contour(f,W,Hh,ox,oz,gs){const segs=[],P=new Map(),key=(i,j,d)=>(j*W+i)*2+d;
+ const pt=(i,j,d)=>{const k=key(i,j,d);if(!P.has(k)){const a=f[j*W+i],b=d?f[(j+1)*W+i]:f[j*W+i+1],t=a/(a-b);P.set(k,d?[ox+i*gs,oz+(j+t)*gs]:[ox+(i+t)*gs,oz+j*gs])}return k};
+ for(let j=0;j<Hh-1;j++)for(let i=0;i<W-1;i++){const v0=f[j*W+i],v1=f[j*W+i+1],v2=f[(j+1)*W+i+1],v3=f[(j+1)*W+i];const c=(v0>0)|(v1>0)<<1|(v2>0)<<2|(v3>0)<<3;if(c===0||c===15)continue;
+  const e0=()=>pt(i,j,0),e1=()=>pt(i+1,j,1),e2=()=>pt(i,j+1,0),e3=()=>pt(i,j,1),ctr=(v0+v1+v2+v3)/4,S=(a,b)=>segs.push([a(),b()]);
+  switch(c){case 1:case 14:S(e3,e0);break;case 2:case 13:S(e0,e1);break;case 3:case 12:S(e3,e1);break;case 4:case 11:S(e1,e2);break;case 6:case 9:S(e0,e2);break;case 7:case 8:S(e3,e2);break;
+   case 5:if(ctr>0){S(e0,e1);S(e2,e3)}else{S(e3,e0);S(e1,e2)}break;case 10:if(ctr>0){S(e3,e0);S(e1,e2)}else{S(e0,e1);S(e2,e3)}break}}
+ const adj=new Map();segs.forEach((s,i)=>{for(const k of s){if(!adj.has(k))adj.set(k,[]);adj.get(k).push(i)}});
+ const used=new Uint8Array(segs.length);let best=null,ba=0;
+ for(let s0=0;s0<segs.length;s0++){if(used[s0])continue;const loop=[segs[s0][0]];let cur=segs[s0][1],si=s0;used[s0]=1;
+  for(let g=0;g<segs.length;g++){loop.push(cur);const nx=(adj.get(cur)||[]).find(q=>!used[q]);if(nx==null)break;used[nx]=1;cur=segs[nx][0]===cur?segs[nx][1]:segs[nx][0];si=nx;if(cur===loop[0])break}
+  const pts=loop.map(k=>P.get(k));let a=0;for(let i=0;i<pts.length;i++){const p=pts[i],q=pts[(i+1)%pts.length];a+=p[0]*q[1]-q[0]*p[1]}if(Math.abs(a)>ba){ba=Math.abs(a);best=pts}}
+ if(!best||ba/2<1.5)return null;const s=dp(best.concat([best[0]]),.04);s.pop();return s.length>=3?s:null}
+
+// ======================= meshes =======================
+function buildRoads(){const gb={ramp:[new GB,new GB,new GB],tread:[new GB,new GB,new GB],gut:[new GB,new GB,new GB],disc:[new GB,new GB,new GB],riser:new GB,skirt:new GB,parapet:new GB};
+ const STONE=[.98,.95,.9],CB=[1,.98,.94];
+ for(const e of edges){const cls=e.cls,tile=cls===0?3.2:1.6,col=tone(CB,.05,e.id*3+1),hasG=cls<2;
+  // sample list: every centreline sample plus each riser twice (bottom/top)
+  const ss=[];for(const s of e.cum)ss.push({s,r:-1});for(const r of e.runs)r.ris.forEach((s,k)=>ss.push({s,r:k,run:r}));
+  ss.sort((a,b)=>a.s-b.s||(a.r<0?-1:1));const ent=[];
+  for(let q=0;q<ss.length;q++){const o=ss[q];if(o.r<0&&ss.some(z=>z.r>=0&&Math.abs(z.s-o.s)<.04))continue;const fr=frameAt(e,o.s),w=wAt(e,o.s);
+   if(o.r>=0){ent.push({s:o.s,f:fr,w,y:o.run.h0+o.run.rise*o.r,ris:o.r,run:o.run});ent.push({s:o.s,f:fr,w,y:o.run.h0+o.run.rise*(o.r+1),ris:-2,run:o.run})}
+   else ent.push({s:o.s,f:fr,w,y:yAt(e,o.s),ris:-1})}
+  const at=(en,l,y)=>[en.f.x-en.f.tz*l,y??en.y,en.f.z+en.f.tx*l];
+  const runAt=s=>e.runs.find(r=>s<=r.s1)||e.runs[e.runs.length-1];
+  for(let q=0;q<ent.length-1;q++){const A=ent[q],B=ent[q+1];
+   if(Math.abs(B.s-A.s)<1e-6){if(Math.abs(B.y-A.y)>1e-4){const hw=A.w/2,row=Math.floor(ihash(e.id,A.ris,3)*10)*.1,c=tone(STONE,.06,e.id*31+A.ris),lo=Math.min(A.y,B.y),hi=Math.max(A.y,B.y);
+     const a=at(A,hw,lo),b=at(A,-hw,lo),cc=at(A,-hw,hi),d=at(A,hw,hi);gb.riser.quad(V(...a,0,row,c),V(...b,A.w/1.6,row,c),V(...cc,A.w/1.6,row+.1,c),V(...d,0,row+.1,c))}continue}
+   const rt=runAt((A.s+B.s)/2).t,hA=A.w/2,hB=B.w/2,vA=A.s/tile,vB=B.s/tile;
+   const lat=rt===0&&hasG?[1,.25,0,-.25,-1]:[1,-1],cols=rt===0&&hasG?[.82,1,.94,1,.82]:[.86,.86];
+   for(let c=0;c<lat.length-1;c++){const isG=rt===0&&hasG&&(c===1||c===2),G=isG?gb.gut[cls]:rt===0?gb.ramp[cls]:gb.tread[cls];
+    const lA=k=>Math.abs(lat[k])===1?lat[k]*hA:lat[k],lB=k=>Math.abs(lat[k])===1?lat[k]*hB:lat[k],dy=k=>lat[k]===0?-.04:0,u=(l)=>isG?l/.5+.5:l/tile;
+    const t=rt===0?tile:2,ua=l=>isG?l/.5+.5:l/t,va=isG?A.s/2:A.s/t,vb=isG?B.s/2:B.s/t;
+    const p0=at(A,lA(c),A.y+dy(c)),p1=at(B,lB(c),B.y+dy(c)),p2=at(B,lB(c+1),B.y+dy(c+1)),p3=at(A,lA(c+1),A.y+dy(c+1));
+    G.quad(V(...p0,ua(lA(c)),va,sh(col,cols[c])),V(...p1,ua(lB(c)),vb,sh(col,cols[c])),V(...p2,ua(lB(c+1)),vb,sh(col,cols[c+1])),V(...p3,ua(lA(c+1)),va,sh(col,cols[c+1])))}}
+  // side faces: skirt down to the neighbouring ground, parapet where the drop exceeds 1.1 m; skipped where the side opens onto another street
+  for(const side of [1,-1]){let prev=null;
+   for(const en of ent){const hw=en.w/2,ox=en.f.x-en.f.tz*side*(hw+.45),oz=en.f.z+en.f.tx*side*(hw+.45),v=fidx(ox,oz),own=FG.own[v],skip=FG.dr[v]<-.1&&own!==e.id;
+    const cur={en,skip,yo:FG.y[v],top:at(en,side*hw)};
+    if(prev&&!prev.skip&&!cur.skip&&Math.abs(cur.en.s-prev.en.s)>1e-6){const a=prev,b=cur,ba=Math.min(a.en.y,a.yo)-.45,bb=Math.min(b.en.y,b.yo)-.45,c=tone([.9,.86,.8],.05,e.id),u0=a.en.s/2.6,u1=b.en.s/2.6;
+     gb.skirt.quad(V(a.top[0],a.en.y,a.top[2],u0,a.en.y/2.6,c),V(b.top[0],b.en.y,b.top[2],u1,b.en.y/2.6,c),V(b.top[0],bb,b.top[2],u1,bb/2.6,sh(c,.75)),V(a.top[0],ba,a.top[2],u0,ba/2.6,sh(c,.75)));
+     if(a.en.y-a.yo>1.1&&b.en.y-b.yo>1.1){const ta=Math.max(a.en.y+.7,fAt(e,a.en.s)+.95),tb=Math.max(b.en.y+.7,fAt(e,b.en.s)+.95),ia=at(a.en,side*(hw-.28)),ib=at(b.en,side*(hw-.28)),pc=[1,.99,.97];
+      gb.parapet.quad(V(ia[0],a.en.y,ia[2],u0,a.en.y/2,pc),V(ib[0],b.en.y,ib[2],u1,b.en.y/2,pc),V(ib[0],tb,ib[2],u1,tb/2,pc),V(ia[0],ta,ia[2],u0,ta/2,pc));
+      gb.parapet.quad(V(a.top[0],a.en.y-.02,a.top[2],u0,a.en.y/2,pc),V(b.top[0],b.en.y-.02,b.top[2],u1,b.en.y/2,pc),V(b.top[0],tb,b.top[2],u1,tb/2,pc),V(a.top[0],ta,a.top[2],u0,ta/2,pc));
+      gb.parapet.quad(V(ia[0],ta,ia[2],u0,0,pc),V(ib[0],tb,ib[2],u1,0,pc),V(b.top[0],tb,b.top[2],u1,.12,pc),V(a.top[0],ta,a.top[2],u0,.12,pc))}}
+    prev=cur}}
+  e.walk=ent.filter(x=>x.ris!==-2).map(x=>({x:x.f.x,y:x.y,z:x.f.z}))}
+ // junction / landing / gate plates
+ for(const n of nodes){if(n.dead||!n.deg)continue;const cls=n.inc.reduce((m,e)=>Math.min(m,e.cls),2),G=gb.disc[n.kind==='plaza'||n.kind==='gate'?0:cls],t=cls===0||n.kind!=='junc'?3.2:1.6,K=n.r>3?40:20,c=tone([1,.97,.93],.04,n.id);
+  for(let k=0;k<K;k++){const a0=k/K*6.2832,a1=(k+1)/K*6.2832,r0=n.r*(1+(n.kind==='plaza'?.08*Math.sin(a0*3+n.id):0)),r1=n.r*(1+(n.kind==='plaza'?.08*Math.sin(a1*3+n.id):0));
+   const p=[n.x+Math.cos(a0)*r0,n.z+Math.sin(a0)*r0],q=[n.x+Math.cos(a1)*r1,n.z+Math.sin(a1)*r1];
+   G.tri(V(n.x,n.h,n.z,n.x/t,n.z/t,c),V(p[0],n.h,p[1],p[0]/t,p[1]/t,sh(c,.9)),V(q[0],n.h,q[1],q[0]/t,q[1]/t,sh(c,.9)))}}
+ for(let c=0;c<3;c++){gb.ramp[c].mesh(MAT.ramp[c],group);gb.tread[c].mesh(MAT.tread[c],group);gb.gut[c].mesh(MAT.gut[c],group);gb.disc[c].mesh(MAT.disc[c],group)}
+ gb.riser.mesh(MAT.riser,group);gb.skirt.mesh(MAT.skirt,group);parapetGroup=new THREE.Group();group.add(parapetGroup);gb.parapet.mesh(MAT.parapet,parapetGroup);parapetGroup.visible=P.parapet}
+function buildLots(){const pad=new GB,wall=new GB,cop=new GB,lp=[];
+ for(const L of lots){const p=L.poly,y=L.pad,c=tone([1,.97,.93],.07,L.id*7+3);
+  const tri=THREE.ShapeUtils.triangulateShape(p.map(q=>new THREE.Vector2(q[0],q[1])),[]);
+  for(const t of tri){const a=p[t[0]],b=p[t[1]],d=p[t[2]];pad.tri(V(a[0],y,a[1],a[0]/3,a[1]/3,c),V(b[0],y,b[1],b[0]/3,b[1]/3,c),V(d[0],y,d[1],d[0]/3,d[1]/3,c))}
+  let per=0;const wc=tone([.95,.92,.86],.05,L.id);
+  for(let i=0;i<p.length;i++){const a=p[i],b=p[(i+1)%p.length],l=Math.hypot(b[0]-a[0],b[1]-a[1]),u0=per/2.6,u1=(per+l)/2.6;per+=l;
+   wall.quad(V(a[0],y,a[1],u0,y/2.6,wc),V(b[0],y,b[1],u1,y/2.6,wc),V(b[0],L.bottom,b[1],u1,L.bottom/2.6,sh(wc,.7)),V(a[0],L.bottom,a[1],u0,L.bottom/2.6,sh(wc,.7)));
+   // dressed coping where this terrace stands >0.4 m above what lies beyond the edge
+   const mx=(a[0]+b[0])/2,mz=(a[1]+b[1])/2,nx=(b[1]-a[1])/(l||1),nz=-(b[0]-a[0])/(l||1),o1=Gat(mx+nx*.4,mz+nz*.4),o2=Gat(mx-nx*.4,mz-nz*.4),out=Math.abs(o1-y)>Math.abs(o2-y)?o1:o2;
+   if(y-out>.4&&l>.05){const k=.06,cc=[.96,.93,.88];cop.quad(V(a[0],y+k,a[1],u0,0,cc),V(b[0],y+k,b[1],u1,0,cc),V(b[0],y-.12,b[1],u1,.1,cc),V(a[0],y-.12,a[1],u0,.1,cc))}}
+  const pts=p.map(q=>new THREE.Vector3(q[0],y+.03,q[1]));lp.push(pts)}
+ pad.mesh(MAT.pad,group);wall.mesh(MAT.lotwall,group);cop.mesh(MAT.coping,group);
+ lotLines=new THREE.Group();const lm=new THREE.LineBasicMaterial({color:0xd2551f,transparent:true,opacity:.85}),dm=new THREE.MeshBasicMaterial({color:0xd2551f});
+ lp.forEach(pts=>{const g=new THREE.BufferGeometry().setFromPoints(pts);lotLines.add(new THREE.LineLoop(g,lm))});
+ const cone=new THREE.ConeGeometry(.22,.6,10);cone.rotateX(Math.PI/2);
+ for(const L of lots){if(!L.buildable)continue;const s=L.seed,m=new THREE.Mesh(cone,dm);m.position.set(s.x,Math.max(L.pad,s.dy)+.45,s.z);m.lookAt(s.x+s.dir[0],m.position.y,s.z+s.dir[1]);lotLines.add(m)}
+ lotLines.visible=P.lots;group.add(lotLines)}
+function buildTerrain(){const S=P.S,ext=S*1.3,seg=320,st=2*ext/seg,n=seg+1,pos=new Float32Array(n*n*3),uv=new Float32Array(n*n*2),col=new Float32Array(n*n*3),idx=[];
+ for(let j=0;j<n;j++)for(let i=0;i<n;i++){const x=-ext+i*st,z=-ext+j*st,k=j*n+i,sd=Math.abs(x)<S*.6&&Math.abs(z)<S*.6?psd(poly,x,z):-9;
+  const y=sd>0?Gat(x,z)-.3:H(x,z);pos[k*3]=x;pos[k*3+1]=y;pos[k*3+2]=z;uv[k*2]=x/6;uv[k*2+1]=z/6}
+ for(let j=0;j<seg;j++)for(let i=0;i<seg;i++){const a=j*n+i,b=a+1,c=a+n,d=c+1;idx.push(a,c,b,b,c,d)}
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(pos,3));g.setAttribute('uv',new THREE.BufferAttribute(uv,2));g.setIndex(idx);g.computeVertexNormals();
+ const nr=g.attributes.normal.array;for(let k=0;k<n*n;k++){const y=pos[k*3+1],ny=nr[k*3+1],rock=sstep(.86,.7,ny),sand=sstep(1.2,.4,y);let c=[lerp(.86,.72,rock),lerp(.9,.68,rock),lerp(.7,.6,rock)];
+  c=[lerp(c[0],1,sand),lerp(c[1],.92,sand),lerp(c[2],.78,sand)];col[k*3]=c[0];col[k*3+1]=c[1];col[k*3+2]=c[2]}
+ g.setAttribute('color',new THREE.BufferAttribute(col,3));const m=new THREE.Mesh(g,MAT.terr);m.receiveShadow=true;m.castShadow=true;group.add(m);
+ const sea=new THREE.Mesh(new THREE.PlaneGeometry(ext*4,ext*2),MSEA);sea.rotation.x=-Math.PI/2;sea.position.set(0,-.35,-S*.5-ext*1);sea.receiveShadow=true;group.add(sea)}
+function buildRampart(){const gb=new GB,n=poly.length,th=1.6,gw=nodes.filter(q=>(q.kind==='gate'||q.kind==='plaza')&&q.deg);
+ const C=[0,0];poly.forEach(p=>{C[0]+=p[0]/n;C[1]+=p[1]/n});
+ const out=poly.map((p,i)=>{const a=poly[(i-1+n)%n],b=poly[(i+1)%n];let nx=b[1]-a[1],nz=-(b[0]-a[0]);const l=Math.hypot(nx,nz)||1;nx/=l;nz/=l;if(nx*(p[0]-C[0])+nz*(p[1]-C[1])<0){nx=-nx;nz=-nz}return[nx,nz]});
+ let top=poly.map((p,i)=>Math.max(Gat(p[0]-out[i][0]*.8,p[1]-out[i][1]*.8),H(p[0]+out[i][0]*(th+.6),p[1]+out[i][1]*(th+.6)))+3.4);
+ for(let it=0;it<3;it++)top=top.map((t,i)=>(top[(i-1+n)%n]+2*t+top[(i+1)%n])/4);
+ const bot=poly.map((p,i)=>Math.min(Gat(p[0]-out[i][0]*.8,p[1]-out[i][1]*.8),H(p[0]+out[i][0]*(th+.6),p[1]+out[i][1]*(th+.6)))-2.5);
+ const open=i=>{const p=poly[i];return gw.some(g=>Math.hypot(g.x-p[0],g.z-p[1])<g.r+2.2)};
+ const c=[1,.93,.82];let per=0;
+ for(let i=0;i<n;i++){const j=(i+1)%n,a=poly[i],b=poly[j],l=Math.hypot(b[0]-a[0],b[1]-a[1]),u0=per/2.6,u1=(per+l)/2.6;per+=l;if(open(i)||open(j))continue;
+  const ao=[a[0]+out[i][0]*th,a[1]+out[i][1]*th],bo=[b[0]+out[j][0]*th,b[1]+out[j][1]*th];
+  gb.quad(V(a[0],top[i],a[1],u0,top[i]/2.6,c),V(b[0],top[j],b[1],u1,top[j]/2.6,c),V(b[0],bot[j],b[1],u1,bot[j]/2.6,sh(c,.8)),V(a[0],bot[i],a[1],u0,bot[i]/2.6,sh(c,.8)));
+  gb.quad(V(ao[0],top[i],ao[1],u0,top[i]/2.6,c),V(bo[0],top[j],bo[1],u1,top[j]/2.6,c),V(bo[0],bot[j],bo[1],u1,bot[j]/2.6,sh(c,.8)),V(ao[0],bot[i],ao[1],u0,bot[i]/2.6,sh(c,.8)));
+  gb.quad(V(a[0],top[i],a[1],u0,0,c),V(b[0],top[j],b[1],u1,0,c),V(bo[0],top[j],bo[1],u1,.6,c),V(ao[0],top[i],ao[1],u0,.6,c));
+  for(const [k,q] of [[i,open((i-1+n)%n)],[j,open((j+1)%n)]])if(q){const p=poly[k],po2=[p[0]+out[k][0]*th,p[1]+out[k][1]*th];gb.quad(V(p[0],top[k],p[1],0,top[k]/2.6,c),V(po2[0],top[k],po2[1],.6,top[k]/2.6,c),V(po2[0],bot[k],po2[1],.6,bot[k]/2.6,c),V(p[0],bot[k],p[1],0,bot[k]/2.6,c))}}
+ rampartGroup=new THREE.Group();group.add(rampartGroup);gb.mesh(MAT.rampart,rampartGroup);rampartGroup.visible=P.wall}
+
+// ======================= generation driver =======================
+function gen(){const t0=performance.now();R=mul(P.seed);ph1=R()*6.28;ph2=R()*6.28;ph3=R()*6.28;stats={};
+ if(group){scene.remove(group);group.traverse(o=>{if(o.geometry)o.geometry.dispose()})}group=new THREE.Group();scene.add(group);
+ poly=makeRampartPoly();synth();levels();FG=fineGrid();makeLots();
+ buildTerrain();buildRoads();buildLots();buildRampart();buildTour();fit();
+ const len=[0,0,0];edges.forEach(e=>len[e.cls]+=e.L);const dead=nodes.filter(n=>!n.dead&&n.deg===1&&n.kind==='end').length,bl=lots.filter(l=>l.buildable);
+ document.getElementById('st').textContent=`شوارع ${len[0]|0} م · أزقة ${len[1]|0} م · دروب ${len[2]|0} م (${dead} مسدود) · ${stats.steps} درجة في ${stats.flights} قلبة · ${bl.length} قطعة بناء (${bl.reduce((s,l)=>s+l.area,0)|0} م²) + ${lots.length-bl.length} فضلة · ردم ${stats.fill|0} م³ / حفر ${stats.cut|0} م³ · ${Math.round(performance.now()-t0)} ms`;
+ exposeAPI()}
+function buildTour(){const adj=nodes.map(()=>[]);edges.forEach(e=>{adj[e.a].push([e,e.b]);adj[e.b].push([e,e.a])});
+ const src=gates.T,dst=gates.B,d=nodes.map(()=>Infinity),pv=nodes.map(()=>null);d[src]=0;const Q=new Set([src]);
+ while(Q.size){let u=-1,bv=Infinity;for(const q of Q)if(d[q]<bv){bv=d[q];u=q}Q.delete(u);if(u===dst)break;for(const [e,v] of adj[u])if(d[u]+e.L<d[v]){d[v]=d[u]+e.L;pv[v]=[e,u];Q.add(v)}}
+ tourPts=[];const seq=[];for(let v=dst;pv[v];v=pv[v][1])seq.unshift(pv[v]);
+ for(const [e,u] of seq){const w=e.a===u?e.walk:e.walk.slice().reverse();tourPts.push(...w)}}
+
+// ======================= API for later building placement =======================
+function exposeAPI(){window.CASBAH={params:Object.assign({},P),
+ nodes:nodes.filter(n=>!n.dead&&n.deg).map(n=>({id:n.id,kind:n.kind,name:n.name||null,x:+n.x.toFixed(3),y:+n.h.toFixed(3),z:+n.z.toFixed(3),radius:+n.r.toFixed(2),degree:n.deg})),
+ roads:edges.map(e=>({id:e.id,class:['primary','alley','derb'][e.cls],width:CLS[e.cls].w,from:e.a,to:e.b,length:+e.L.toFixed(2),centerline:e.walk.filter((_,i)=>i%2===0).map(p=>[+p.x.toFixed(3),+p.y.toFixed(3),+p.z.toFixed(3)]),
+  flights:e.runs.filter(r=>r.t===1).map(r=>({from:+r.s0.toFixed(2),to:+Math.min(r.s1,e.L).toFixed(2),risers:r.ris.length,rise:+Math.abs(r.rise).toFixed(3)}))})),
+ lots:lots.map(L=>({id:L.id,buildable:L.buildable,area:+L.area.toFixed(2),padY:+L.pad.toFixed(3),centroid:[+L.c[0].toFixed(3),+L.c[1].toFixed(3)],polygon:L.poly.map(q=>[+q[0].toFixed(3),+q[1].toFixed(3)]),
+  door:{x:+L.seed.x.toFixed(3),z:+L.seed.z.toFixed(3),streetY:+L.seed.dy.toFixed(3),inward:[+L.seed.dir[0].toFixed(4),+L.seed.dir[1].toFixed(4)],road:L.seed.e,roadClass:['primary','alley','derb'][L.seed.cls],steps:L.steps}})),
+ heightAt:(x,z)=>Gat(x,z),
+  lotAt(x,z){const L=lots.find(L=>pinside(L.poly,x,z));return L?L.id:null},
+ // origin on the pad at the door, +z of the frame pointing into the lot (building front faces the street)
+ lotFrame(id){const L=lots[id];if(!L)return null;const s=L.seed;return{origin:[s.x,L.pad,s.z],yaw:Math.atan2(s.dir[0],s.dir[1]),polygon:L.poly,padY:L.pad}},
+ placeOnLot(id,obj){const f=this.lotFrame(id);if(!f)return false;obj.position.set(f.origin[0],f.origin[1],f.origin[2]);obj.rotation.set(0,f.yaw,0);group.add(obj);return true},
+ three:{THREE,scene,group}}}
+
+// ======================= camera, views, tour, UI =======================
+function fit(){const S=P.S,k=S*.75;Object.assign(sun.shadow.camera,{left:-k,right:k,top:k,bottom:-k,near:1,far:S*4});sun.shadow.camera.updateProjectionMatrix();
+ sun.position.set(S*.55,S*.95,S*.25);sun.target.position.set(0,S*.08,0);scene.fog.near=S*1.6;scene.fog.far=S*4.2;controls.maxDistance=S*2.6;view('a')}
+function view(v){stopTour();const S=P.S;let t,p;
+ if(v==='t'){t=[0,S*.1,0];p=[0,S*1.45,-S*.02]}
+ else if(v==='p'){const n=nodes[gates.B];t=[n.x,n.h+1,n.z];p=[n.x+10,n.h+9,n.z-15]}
+ else if(v==='h'){const n=nodes[gates.T];t=[n.x,n.h-S*.1,n.z-S*.35];p=[n.x+4,n.h+6,n.z+7]}
+ else{t=[0,S*.11,-S*.02];p=[S*.42,S*.55,-S*.95]}
+ controls.target.set(...t);cam.position.set(...p);controls.update()}
+let tour=false,tourT=0,rot=false;const keys=new Set();
+function stopTour(){tour=false;controls.enabled=true;document.getElementById('tr').textContent='🚶 جولة'}
+function samplePath(t){let acc=0;for(let i=1;i<tourPts.length;i++){const a=tourPts[i-1],b=tourPts[i],l=Math.hypot(b.x-a.x,b.z-a.z);if(acc+l>=t){const u=l?(t-acc)/l:0;return new THREE.Vector3(lerp(a.x,b.x,u),lerp(a.y,b.y,u),lerp(a.z,b.z,u))}acc+=l}const z=tourPts[tourPts.length-1];return new THREE.Vector3(z.x,z.y,z.z)}
+document.getElementById('tr').onclick=()=>{if(tour){stopTour();return}if(tourPts.length<2)return;tour=true;tourT=0;controls.enabled=false;document.getElementById('tr').textContent='⏹ إيقاف'};
+document.getElementById('ro').onclick=()=>{rot=!rot;controls.autoRotate=rot;controls.autoRotateSpeed=.6};
+document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>view(b.dataset.v));
+const ray=new THREE.Raycaster();renderer.domElement.addEventListener('dblclick',e=>{ray.setFromCamera({x:e.clientX/innerWidth*2-1,y:-(e.clientY/innerHeight)*2+1},cam);const h=ray.intersectObjects(group.children,true)[0];if(h){const d=h.point.clone().sub(controls.target);controls.target.add(d);cam.position.add(d.multiplyScalar(.6))}});
+addEventListener('keydown',e=>{if(/INPUT|SELECT/.test(e.target.tagName))return;keys.add(e.key.toLowerCase())});addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));addEventListener('blur',()=>keys.clear());
+const $=id=>document.getElementById(id);let tmr=0;
+function rebuild(){clearTimeout(tmr);tmr=setTimeout(()=>{Object.assign(P,{seed:+$('sd').value|0,dens:+$('dn').value,slope:+$('sl').value,loops:+$('lp').value,branch:+$('br').value,S:+$('sz').value});
+ $('busy').style.display='flex';setTimeout(()=>{try{gen()}catch(err){console.error(err);$('st').textContent='خطأ في التوليد: '+err.message}$('busy').style.display='none'},30)},200)}
+['sd','dn','sl','lp','br','sz'].forEach(id=>$(id).addEventListener('change',rebuild));
+$('rd').onclick=()=>{$('sd').value=Math.random()*1e5|0;rebuild()};
+$('wl').onchange=e=>{P.wall=e.target.checked;if(rampartGroup)rampartGroup.visible=P.wall};
+$('pp').onchange=e=>{P.parapet=e.target.checked;if(parapetGroup)parapetGroup.visible=P.parapet};
+$('lt').onchange=e=>{P.lots=e.target.checked;if(lotLines)lotLines.visible=P.lots};
+$('ex').onclick=()=>{const d=Object.assign({},window.CASBAH);delete d.three;const b=new Blob([JSON.stringify(d)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`casbah-${P.seed}.json`;a.click()};
+function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}addEventListener('resize',resize);resize();
+let last=performance.now();
+(function loop(){requestAnimationFrame(loop);const now=performance.now(),dt=Math.min(.05,(now-last)/1000);last=now;
+ if(tour&&tourPts.length>1){tourT+=dt*3.2;const p=samplePath(tourT),q=samplePath(tourT+5);cam.position.set(p.x,p.y+1.65,p.z);cam.lookAt(q.x,q.y+1.3,q.z);controls.target.copy(q);
+  let tot=0;for(let i=1;i<tourPts.length;i++)tot+=Math.hypot(tourPts[i].x-tourPts[i-1].x,tourPts[i].z-tourPts[i-1].z);if(tourT>tot)stopTour()}
+ else{if(keys.size){const f=new THREE.Vector3();cam.getWorldDirection(f);f.y=0;f.normalize();const r=new THREE.Vector3(-f.z,0,f.x),sp=cam.position.distanceTo(controls.target)*dt*.8,m=new THREE.Vector3();
+   if(keys.has('w')||keys.has('arrowup'))m.add(f);if(keys.has('s')||keys.has('arrowdown'))m.sub(f);if(keys.has('d')||keys.has('arrowright'))m.add(r);if(keys.has('a')||keys.has('arrowleft'))m.sub(r);
+   m.multiplyScalar(sp);cam.position.add(m);controls.target.add(m)}controls.update()}
+ renderer.render(scene,cam)})();
+rebuild();
+</script>
+</body>
+</html>
