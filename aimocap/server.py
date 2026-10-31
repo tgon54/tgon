@@ -273,8 +273,40 @@ def rig_preview(jid, body):
     X = np.stack([res['globals'][n][:, :3, 3] for n in names], 1)          # (T,B,3) rig units
     X = (X / res['scale']) @ res['basis']                                  # back to mocap space
     tips = [names.index(n) for n in names if re.match(r'^(thumb|index|middle|ring|pinky)_03_[lr]$', n)]
-    return dict(target=tid, names=names, links=links, tips=tips, pos=np.round(X, 4).tolist(),
-                fingers=res['info']['hands'])
+    out = dict(target=tid, names=names, links=links, tips=tips, pos=np.round(X, 4).tolist(),
+               fingers=res['info']['hands'], mesh=False)
+    from .rig import mesh_file_for, mesh_from_fbx
+    mf = mesh_file_for(tid) if body.get('body', True) else None
+    if mf:
+        try:
+            mesh = mesh_from_fbx(mf)
+            A = np.eye(4); A[:3, :3] = res['basis'].T / res['scale']          # rig -> viewer space
+            K = np.stack([A @ res['globals'][b] @ np.linalg.inv(mesh['bind'][b]) if b in res['globals']
+                          else np.tile(A @ np.eye(4), (len(X), 1, 1)) for b in mesh['bones']], 1)   # (T,B,4,4)
+            out.update(mesh=os.path.basename(mf), mesh_target=mesh_key(mf), skin=_b64(K[:, :, :3, :]))
+        except Exception as e:
+            out['mesh_error'] = f'{type(e).__name__}: {e}'
+    return out
+
+
+def _b64(a, dt=np.float32):
+    import base64
+    return base64.b64encode(np.ascontiguousarray(a, dt).tobytes()).decode('ascii')
+
+
+def mesh_key(path):
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def mesh_payload(stem):
+    from .rig import _folder_files, mesh_from_fbx
+    p = _folder_files().get(stem)
+    if not p or not p.lower().endswith('.fbx'):
+        raise ValueError('no mesh file ' + stem)
+    m = mesh_from_fbx(p)
+    return dict(name=stem, n=len(m['verts']), nf=len(m['faces']), bones=m['bones'],
+                verts=_b64(m['verts']), faces=_b64(m['faces'], np.uint32),
+                joints=_b64(m['joints'], np.uint16), weights=_b64(m['weights']))
 
 
 def clean_export(jid, body):
@@ -358,6 +390,9 @@ class H(BaseHTTPRequestHandler):
             m = re.match(r'^/api/jobs/([\w-]+)/motion$', p)
             if m:
                 return self._send(200, job_motion(m.group(1)))
+            m = re.match(r'^/api/mesh/([^/]+)$', p)
+            if m:
+                return self._send(200, mesh_payload(unquote(m.group(1))))
             if p == '/api/targets':
                 from .rig import list_targets, MANNEQUIN_DIR
                 return self._send(200, dict(folder=MANNEQUIN_DIR, targets=list_targets()))

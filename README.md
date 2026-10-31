@@ -64,6 +64,8 @@ and a speed curve (original vs cleaned). Drag to select frames, then:
   **Relax hands**, **Trim to selection**, **Loop blend**, **Auto-clean**, one-click **Fix** per issue.
 * **Mannequin type** selector on the 3D view: preview the motion on UE4 Mannequin, UE5 Manny or any
   `mannequins/` character exactly as it will be exported (solved fingers, joint limits), or on the raw points.
+  With the character's FBX in `mannequins/` the preview shows its **real 3D body** (toggle *Body*); the
+  bundled UE4/UE5 targets use a mannequins/ FBX with the same skeleton.
 * **✋ Fix fingers** (selection or whole clip): rejects impossible finger points — wrong bone lengths,
   points far from the wrist, broken palm, sudden jumps — re-interpolates them, and lets unsure fingers relax
   naturally. Also part of Auto-clean, and applied automatically to newly processed videos.

@@ -20,6 +20,7 @@ header h1{font-size:15px;margin:0 8px 0 0;white-space:nowrap}header .name{color:
 main{display:grid;grid-template-columns:1fr 330px;min-height:0}
 #view{position:relative;min-height:0;background:radial-gradient(ellipse at 50% 30%,#141c26,#0a0e13)}
 #c3d{width:100%;height:100%;display:block;cursor:grab}
+#cgl{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .hud{position:absolute;left:12px;top:10px;color:var(--mut);font-size:12px;pointer-events:none}
 .hud b{color:var(--fg)}.vopts{position:absolute;right:10px;top:10px;display:flex;gap:6px}
 aside{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:12px;display:flex;flex-direction:column;gap:12px}
@@ -54,9 +55,10 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:6px 10px
     <a class="btn" href="/" title="Back to AI-MoCap">AI-MoCap</a>
   </header>
   <main>
-    <div id="view"><canvas id="c3d"></canvas>
+    <div id="view"><canvas id="c3d"></canvas><canvas id="cgl"></canvas>
       <div class="hud" id="hud"></div>
       <div class="vopts"><select id="rigSel" title="Mannequin type shown in the preview (what gets exported)"><option value="">Points (raw tracking)</option></select>
+        <button class="btn sm on" id="optBody" title="Show the mannequin body (needs its FBX in the mannequins folder)">Body</button>
         <button class="btn sm on" id="optGhost" title="Show original motion as a ghost">Ghost</button>
         <button class="btn sm on" id="optFollow">Follow</button><button class="btn sm" id="optFront">Front</button><button class="btn sm" id="optSide">Side</button></div>
     </div>
@@ -119,7 +121,7 @@ const ISS={spike:['Spike / glitch','#f06a6a','interpolate'],jitter:['Jitter','#f
 const OPC={fix_hands:'#7fe0ff',interpolate:'#f06a6a',smooth:'#f0b14a',hold:'#9aa6b2',foot_lock:'#b77dff',relax_hands:'#4fb8ff',auto_clean:'#2ed3c6',trim:'#5ad08a',loop:'#5ad08a'};
 const FING=[[0,1,2,3,4],[0,5,6,7,8],[0,9,10,11,12],[0,13,14,15,16],[0,17,18,19,20],[5,9,13,17]];
 let S={id:null,orig:null,clean:null,edits:[],undo:[],redo:[],f:0,sel:null,play:false,selEdit:-1,trim:null,curve:'right_wrist'};
-let cam={yaw:0.6,pitch:0.25,dist:4.2,cx:0,cy:0.9,cz:0}, opt={ghost:true,follow:true};
+let cam={yaw:0.6,pitch:0.25,dist:4.2,cx:0,cy:0.9,cz:0}, opt={ghost:true,follow:true,body:true};
 
 function toast(m,ms=2600){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
 async function api(u,o={}){const r=await fetch(u,o);const j=await r.json().catch(()=>({error:r.statusText}));if(!r.ok||j.error)throw new Error(j.error||r.statusText);return j}
@@ -167,7 +169,10 @@ let rigPend=null;
 async function loadRig(){
   const t=$('#rigSel').value;if(!t||!S.id){S.rig=null;draw3d();return}
   const my=rigPend={};
-  try{const r=await post(`/api/jobs/${S.id}/rig_preview`,{edits:S.edits,target:t});if(my===rigPend){S.rig=r;draw3d()}}
+  try{const r=await post(`/api/jobs/${S.id}/rig_preview`,{edits:S.edits,target:t,body:opt.body});
+    if(r.skin){r.skinF=b64f(r.skin,Float32Array);await getMesh(r.mesh_target)}
+    if(r.mesh_error)toast('Body: '+r.mesh_error);
+    if(my===rigPend){S.rig=r;draw3d()}}
   catch(e){if(my===rigPend){S.rig=null;toast('Mannequin preview: '+e.message);draw3d()}}
 }
 $('#rigSel').onchange=()=>{localStorage.setItem('aimocap-rig',$('#rigSel').value);loadRig()};
@@ -244,6 +249,48 @@ function drawSkel(P,alpha,w){g.globalAlpha=alpha;for(const [a,b] of S.orig.bones
   for(const p of P){const A=proj(p);if(A){g.fillStyle='#e6edf4';g.beginPath();g.arc(A[0],A[1],w*0.9,0,7);g.fill()}}g.globalAlpha=1}
 function drawHand(H,conf,col){if(!H)return;for(const ch of FING)for(let k=1;k<ch.length;k++){
   const c=conf?Math.min(conf[ch[k]],conf[ch[k-1]]):1;if(c<0.3)continue;g.globalAlpha=0.4+0.6*Math.min(1,c/0.6);line(H[ch[k-1]],H[ch[k]],col,1.6)}g.globalAlpha=1}
+// ------------------------------------------------------------------ body mesh (WebGL, CPU skinning)
+const MESH={};
+function b64f(s,T){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new T(u.buffer)}
+async function getMesh(k){if(MESH[k])return MESH[k];const m=await api('/api/mesh/'+encodeURIComponent(k));
+  MESH[k]={n:m.n,nf:m.nf,bones:m.bones,v:b64f(m.verts,Float32Array),f:b64f(m.faces,Uint32Array),j:b64f(m.joints,Uint16Array),w:b64f(m.weights,Float32Array),gl:null};return MESH[k]}
+const glc=$('#cgl');let GL=null,GLP=null;
+function initGL(){if(GL!==null)return GL;GL=glc.getContext('webgl2',{antialias:true,premultipliedAlpha:true})||false;if(!GL){toast('WebGL2 not available: showing skeleton');return GL}
+  const vs=`#version 300 es
+  in vec3 p;in vec3 nrm;uniform vec4 cm;uniform vec4 cp;uniform vec3 sc;out vec3 vn;
+  void main(){vec3 x=p-cp.xyz;float cy=cos(cm.x),sy=sin(cm.x),cpi=cos(cm.y),sp=sin(cm.y);
+    float X=cy*x.x-sy*x.z,Z=sy*x.x+cy*x.z,Y=cpi*x.y-sp*Z;Z=sp*x.y+cpi*Z;float d=cm.z-Z;
+    float nX=cy*nrm.x-sy*nrm.z,nZ=sy*nrm.x+cy*nrm.z,nY=cpi*nrm.y-sp*nZ;nZ=sp*nrm.y+cpi*nZ;vn=vec3(nX,nY,nZ);
+    float N=0.05,F=60.0;gl_Position=vec4(2.0*X*sc.x/sc.y,2.0*Y*sc.x/sc.z-0.1*d,d*(F+N)/(F-N)-2.0*F*N/(F-N),d);}`;
+  const fs=`#version 300 es
+  precision mediump float;in vec3 vn;out vec4 o;
+  void main(){vec3 n=normalize(vn);if(!gl_FrontFacing)n=-n;vec3 L=normalize(vec3(0.35,0.55,0.75));
+    float k=0.32+0.6*max(dot(n,L),0.0)+0.18*pow(max(n.z,0.0),3.0);o=vec4(vec3(0.70,0.74,0.80)*k,1.0);}`;
+  const sh=(t,src)=>{const x=GL.createShader(t);GL.shaderSource(x,src);GL.compileShader(x);if(!GL.getShaderParameter(x,GL.COMPILE_STATUS))throw new Error(GL.getShaderInfoLog(x));return x};
+  GLP=GL.createProgram();GL.attachShader(GLP,sh(GL.VERTEX_SHADER,vs));GL.attachShader(GLP,sh(GL.FRAGMENT_SHADER,fs));GL.bindAttribLocation(GLP,0,'p');GL.bindAttribLocation(GLP,1,'nrm');GL.linkProgram(GLP);
+  return GL}
+function renderBody(fr){
+  if(!initGL())return;const W=cv.width,H=cv.height;if(glc.width!==W||glc.height!==H){glc.width=W;glc.height=H}
+  GL.viewport(0,0,W,H);GL.clearColor(0,0,0,0);GL.clear(GL.COLOR_BUFFER_BIT|GL.DEPTH_BUFFER_BIT);if(fr<0)return;
+  const R=S.rig,M=MESH[R.mesh_target],nb=M.bones.length,K=R.skinF,o=fr*nb*12,n=M.n;
+  if(!M.gl){M.gl={pos:new Float32Array(n*3),nrm:new Float32Array(n*3),vao:GL.createVertexArray(),pb:GL.createBuffer(),nb:GL.createBuffer(),ib:GL.createBuffer()};
+    GL.bindVertexArray(M.gl.vao);GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER,M.gl.ib);GL.bufferData(GL.ELEMENT_ARRAY_BUFFER,M.f,GL.STATIC_DRAW);
+    GL.bindBuffer(GL.ARRAY_BUFFER,M.gl.pb);GL.enableVertexAttribArray(0);GL.vertexAttribPointer(0,3,GL.FLOAT,false,0,0);
+    GL.bindBuffer(GL.ARRAY_BUFFER,M.gl.nb);GL.enableVertexAttribArray(1);GL.vertexAttribPointer(1,3,GL.FLOAT,false,0,0)}
+  const P=M.gl.pos,Nn=M.gl.nrm,v=M.v,J=M.j,Wt=M.w;
+  for(let i=0;i<n;i++){const x=v[i*3],y=v[i*3+1],z=v[i*3+2];let a=0,b=0,c=0;
+    for(let k=0;k<4;k++){const w=Wt[i*4+k];if(w<=0)continue;const m=o+J[i*4+k]*12;
+      a+=w*(K[m]*x+K[m+1]*y+K[m+2]*z+K[m+3]);b+=w*(K[m+4]*x+K[m+5]*y+K[m+6]*z+K[m+7]);c+=w*(K[m+8]*x+K[m+9]*y+K[m+10]*z+K[m+11])}
+    P[i*3]=a;P[i*3+1]=b;P[i*3+2]=c}
+  Nn.fill(0);const f=M.f;
+  for(let t=0;t<f.length;t+=3){const i=f[t]*3,j=f[t+1]*3,k=f[t+2]*3;const ux=P[j]-P[i],uy=P[j+1]-P[i+1],uz=P[j+2]-P[i+2],vx=P[k]-P[i],vy=P[k+1]-P[i+1],vz=P[k+2]-P[i+2];
+    const nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;for(const q of [i,j,k]){Nn[q]+=nx;Nn[q+1]+=ny;Nn[q+2]+=nz}}
+  GL.useProgram(GLP);GL.enable(GL.DEPTH_TEST);GL.bindVertexArray(M.gl.vao);
+  GL.bindBuffer(GL.ARRAY_BUFFER,M.gl.pb);GL.bufferData(GL.ARRAY_BUFFER,P,GL.DYNAMIC_DRAW);GL.bindBuffer(GL.ARRAY_BUFFER,M.gl.nb);GL.bufferData(GL.ARRAY_BUFFER,Nn,GL.DYNAMIC_DRAW);
+  GL.uniform4f(GL.getUniformLocation(GLP,'cm'),cam.yaw,cam.pitch,cam.dist,0);GL.uniform4f(GL.getUniformLocation(GLP,'cp'),cam.cx,cam.cy,cam.cz,0);
+  GL.uniform3f(GL.getUniformLocation(GLP,'sc'),Math.min(W,H)*1.15,W,H);
+  GL.drawElements(GL.TRIANGLES,f.length,GL.UNSIGNED_INT,0);
+}
 function rigCol(n){return /_l$/.test(n)?'#ff9a3c':/_r$/.test(n)?'#4f8cff':'#d9e2ec'}
 function drawRig(R,X){
   for(const [a,b] of R.links){const n=R.names[b],fin=/^(thumb|index|middle|ring|pinky)/.test(n)||/metacarpal/.test(n);
@@ -252,7 +299,9 @@ function drawRig(R,X){
     line(c,[c[0]+(c[0]-p[0])*0.8,c[1]+(c[1]-p[1])*0.8,c[2]+(c[2]-p[2])*0.8],/_l$/.test(R.names[t])?'#ffc48a':'#9cc0ff',1.6)}
   for(const p of X){const A=proj(p);if(A){g.fillStyle='#e6edf4';g.beginPath();g.arc(A[0],A[1],1.6,0,7);g.fill()}}
 }
-function draw3d(){
+let bodyFrame=-1;
+function draw3d(){bodyFrame=-1;draw3d2d();renderBody(bodyFrame)}
+function draw3d2d(){
   const r=cv.getBoundingClientRect(),dpr=devicePixelRatio||1;if(cv.width!==Math.round(r.width*dpr)||cv.height!==Math.round(r.height*dpr)){cv.width=Math.round(r.width*dpr);cv.height=Math.round(r.height*dpr)}
   g.clearRect(0,0,cv.width,cv.height);if(!S.orig)return;
   const f=Math.max(0,Math.min(T()-1,S.f)),pose=poseAt(f),orig=S.orig.corrected[f];
@@ -263,14 +312,16 @@ function draw3d(){
   if(pose){
     for(const s of ['left','right'])if(pose.contacts[s]){const ft=pose.P[J(s+'_heel')],A=proj([ft[0],0,ft[2]]);if(A){g.fillStyle='rgba(90,208,138,.35)';g.beginPath();g.ellipse(A[0],A[1],14,5,0,0,7);g.fill()}}
     const ri=f-(S.trim?S.trim[0]:0);
-    if(S.rig&&S.rig.pos[ri])drawRig(S.rig,S.rig.pos[ri]);
+    const body=S.rig&&S.rig.skinF&&opt.body&&MESH[S.rig.mesh_target]&&S.rig.pos[ri];
+    if(body)bodyFrame=ri;
+    else if(S.rig&&S.rig.pos[ri])drawRig(S.rig,S.rig.pos[ri]);
     else{drawSkel(pose.P,1,3);
       if(pose.hands){drawHand(pose.hands.left,pose.hands.cl,'#ffc48a');drawHand(pose.hands.right,pose.hands.cr,'#9cc0ff')}}
   }
   const hc=S.clean&&S.clean.hands;
   $('#hud').innerHTML=`<b>${pose?'Cleaned':'Trimmed out'}</b> · frame ${f} · ${(f/S.orig.fps).toFixed(2)} s`+(opt.ghost&&pose?' · <span style="opacity:.6">ghost = original</span>':'')
     +(hc?` · hands: ${hc.left?'L':'–'}${hc.right?'R':'–'}`:' · hands: relaxed (no tracking data)')
-    +(S.rig?` · <b>${esc($('#rigSel').selectedOptions[0].textContent)}</b> (as exported)`:'');
+    +(S.rig?` · <b>${esc($('#rigSel').selectedOptions[0].textContent)}</b> (as exported${S.rig.skinF&&opt.body?', body':S.rig.mesh===false&&opt.body?' — no body FBX in mannequins/, showing skeleton':''})`:'');
   $('#frInfo').textContent=`${f} / ${T()-1}   ${(f/S.orig.fps).toFixed(2)} s`+(S.trim?`   out: ${S.trim[1]-S.trim[0]+1} f`:'');
 }
 let drag=null;
@@ -279,7 +330,7 @@ cv.onpointermove=e=>{if(!drag)return;cam.yaw+=(e.clientX-drag[0])*0.008;cam.pitc
 cv.onpointerup=()=>{drag=null;cv.style.cursor='grab'};
 cv.onwheel=e=>{e.preventDefault();cam.dist=Math.max(1.2,Math.min(14,cam.dist*(e.deltaY>0?1.1:0.9)));draw3d()};
 function tog(id,k){$(id).onclick=()=>{opt[k]=!opt[k];$(id).classList.toggle('on',opt[k]);draw3d()}}
-tog('#optGhost','ghost');tog('#optFollow','follow');
+tog('#optGhost','ghost');$('#optBody').onclick=()=>{opt.body=!opt.body;$('#optBody').classList.toggle('on',opt.body);loadRig()};tog('#optFollow','follow');
 $('#optFront').onclick=()=>{cam.yaw=0;cam.pitch=0.1;draw3d()};$('#optSide').onclick=()=>{cam.yaw=Math.PI/2;cam.pitch=0.1;draw3d()};
 
 // ------------------------------------------------------------------ timeline

@@ -4,6 +4,7 @@ A rig is a dict: name, axes (FBX GlobalSettings), bones = [dict(name, parent, ki
 with FBX local transforms (degrees, file units).  Bundled rigs store only the skeleton (no mesh)."""
 import json
 import os
+import re
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -152,3 +153,121 @@ def rest_globals(rig):
 def lcl_rotation(b, R_local):
     """Local rotation matrix -> Lcl Rotation euler (undoing Pre/PostRotation)."""
     return mat_to_euler(euler_to_mat(b['pre']).T @ R_local @ euler_to_mat(b['post']))
+
+
+# ----------------------------------------------------------------- meshes --
+_MESH_CACHE = {}
+
+
+def mesh_from_fbx(path, max_verts=25000):
+    """Skinned body mesh for the preview: dict(verts (N,3) f32 in file space, faces (M,3) u32,
+    bones [names], joints (N,4) u16, weights (N,4) f32, bind {bone: 4x4 TransformLink}).
+    Picks the most detailed LOD with <= max_verts vertices (all meshes when there are no LODs)."""
+    key = (os.path.abspath(path), os.path.getmtime(path), max_verts)
+    if key in _MESH_CACHE:
+        return _MESH_CACHE[key]
+    _, root = F.read(path)
+    objs = root.find('Objects')
+    conns = [c.values for c in root.find('Connections').findall('C')]
+    by_id = {o.values[0]: o for o in objs.children if o.props}
+    name = lambda i: _name(by_id[i].values[1]) if i in by_id else ''
+    child_of = {}
+    for c in conns:
+        if c[0] == b'OO':
+            child_of.setdefault(c[2], []).append(c[1])
+    geos = [g for g in objs.findall('Geometry') if g.values[2] == b'Mesh' and g.find('Vertices') is not None]
+    if not geos:
+        raise ValueError('no mesh in ' + str(path))
+    nverts = lambda g: len(g.find('Vertices').values[0]) // 3
+    lod = {}
+    for g in geos:
+        m = re.search(r'LOD(\d+)', name(g.values[0]))
+        lod.setdefault(int(m.group(1)) if m else -1, []).append(g)
+    if -1 in lod or len(lod) == 1:
+        pick = sum(lod.values(), [])
+    else:
+        ok = [k for k in sorted(lod) if sum(nverts(g) for g in lod[k]) <= max_verts]
+        pick = lod[ok[0] if ok else max(lod)]
+    V, Fc, Jn, Wt, bones, bind = [], [], [], [], [], {}
+    off = 0
+    for g in pick:
+        v = np.asarray(g.find('Vertices').values[0], float).reshape(-1, 3)
+        pi = np.asarray(g.find('PolygonVertexIndex').values[0], np.int64)
+        ends = np.where(pi < 0)[0]
+        idx = np.where(pi < 0, -pi - 1, pi)
+        start = 0
+        tris = []
+        for e in ends:                                   # fan-triangulate
+            poly = idx[start:e + 1]
+            for k in range(1, len(poly) - 1):
+                tris.append((poly[0], poly[k], poly[k + 1]))
+            start = e + 1
+        n = len(v)
+        jw = [[] for _ in range(n)]
+        Tm = _model_global(g.values[0], conns, by_id)       # mesh node's own transform
+        for skin in [s for s in child_of.get(g.values[0], []) if s in by_id and by_id[s].values[2] == b'Skin']:
+            for cl in child_of.get(skin, []):
+                c = by_id.get(cl)
+                if c is None or c.values[2] != b'Cluster' or c.find('Indexes') is None:
+                    continue
+                links = [b for b in child_of.get(cl, []) if b in by_id and by_id[b].name == 'Model']
+                if not links:
+                    continue
+                bn = name(links[0])
+                if bn not in bind:
+                    bind[bn] = np.asarray(c.find('TransformLink').values[0], float).reshape(4, 4).T
+                    bones.append(bn)
+                bi = bones.index(bn)
+                for i, w in zip(c.find('Indexes').values[0], c.find('Weights').values[0]):
+                    jw[i].append((w, bi))
+        v = v @ Tm[:3, :3].T + Tm[:3, 3]
+        J4 = np.zeros((n, 4), np.uint16); W4 = np.zeros((n, 4), np.float32)
+        for i, lst in enumerate(jw):
+            lst.sort(reverse=True)
+            for k, (w, b) in enumerate(lst[:4]):
+                J4[i, k], W4[i, k] = b, w
+        s = W4.sum(1, keepdims=True)
+        W4 = np.where(s > 0, W4 / np.maximum(s, 1e-9), 0)
+        V.append(v); Fc.append(np.asarray(tris, np.int64) + off); Jn.append(J4); Wt.append(W4)
+        off += n
+    out = dict(verts=np.concatenate(V).astype(np.float32), faces=np.concatenate(Fc).astype(np.uint32),
+               bones=bones, joints=np.concatenate(Jn), weights=np.concatenate(Wt).astype(np.float32), bind=bind)
+    _MESH_CACHE[key] = out
+    return out
+
+
+def _model_global(geo_id, conns, by_id):
+    """Global matrix of the Model that owns a Geometry (cluster 'Transform' is not used: UE
+    exports store the inverse bind there, other exporters store the mesh matrix)."""
+    parent = {c[1]: c[2] for c in conns if c[0] == b'OO'}
+    mid = parent.get(geo_id)
+    G = np.eye(4)
+    while mid in by_id and by_id[mid].name == 'Model':
+        pp = F.props70(by_id[mid])
+        g = lambda k, d: [float(x) for x in pp.get(k, d)[:3]]
+        L = local_matrix(dict(t=g('Lcl Translation', [0, 0, 0]), r=g('Lcl Rotation', [0, 0, 0]),
+                              s=g('Lcl Scaling', [1, 1, 1]), pre=g('PreRotation', [0, 0, 0]),
+                              post=g('PostRotation', [0, 0, 0])))
+        G = L @ G
+        mid = parent.get(mid)
+    return G
+
+
+def mesh_file_for(target):
+    """FBX that provides the body mesh for a target: the mannequins/ file itself, or for the
+    bundled ue4/ue5 rigs a mannequins/ file with the same skeleton."""
+    files = _folder_files()
+    if target in files:
+        return files[target] if files[target].lower().endswith('.fbx') else None
+    if target in BUNDLED:
+        want = {b['name'] for b in load_rig(target)['bones'] if b['kind'] != 'Null'}
+        for stem, p in files.items():
+            if p.lower().endswith('.fbx'):
+                try:
+                    if {b['name'] for b in load_rig(p)['bones'] if b['kind'] != 'Null'} == want:
+                        return p
+                except Exception:
+                    pass
+    if os.path.exists(target) and target.lower().endswith('.fbx'):
+        return target
+    return None
