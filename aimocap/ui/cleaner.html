@@ -308,7 +308,8 @@ function draw3d2d(){
   if(opt.follow){const h=(pose?pose.P:orig)[19];cam.cx+=(h[0]-cam.cx)*0.25;cam.cz+=(h[2]-cam.cz)*0.25}
   g.strokeStyle='#1c2836';g.lineWidth=1;const gx=Math.round(cam.cx),gz=Math.round(cam.cz);
   for(let i=-4;i<=4;i++){line([gx+i*0.5,0,gz-2],[gx+i*0.5,0,gz+2],'#1c2836',1);line([gx-2,0,gz+i*0.5],[gx+2,0,gz+i*0.5],'#1c2836',1)}
-  if(opt.ghost||!pose)drawSkel(orig,pose?0.22:0.55,2);
+  const showBody=S.rig&&S.rig.skinF&&opt.body;   // ghost lines would clutter the body
+  if((opt.ghost&&!showBody)||!pose)drawSkel(orig,pose?0.22:0.55,2);
   if(pose){
     for(const s of ['left','right'])if(pose.contacts[s]){const ft=pose.P[J(s+'_heel')],A=proj([ft[0],0,ft[2]]);if(A){g.fillStyle='rgba(90,208,138,.35)';g.beginPath();g.ellipse(A[0],A[1],14,5,0,0,7);g.fill()}}
     const ri=f-(S.trim?S.trim[0]:0);
@@ -319,7 +320,7 @@ function draw3d2d(){
       if(pose.hands){drawHand(pose.hands.left,pose.hands.cl,'#ffc48a');drawHand(pose.hands.right,pose.hands.cr,'#9cc0ff')}}
   }
   const hc=S.clean&&S.clean.hands;
-  $('#hud').innerHTML=`<b>${pose?'Cleaned':'Trimmed out'}</b> · frame ${f} · ${(f/S.orig.fps).toFixed(2)} s`+(opt.ghost&&pose?' · <span style="opacity:.6">ghost = original</span>':'')
+  $('#hud').innerHTML=`<b>${pose?'Cleaned':'Trimmed out'}</b> · frame ${f} · ${(f/S.orig.fps).toFixed(2)} s`+(opt.ghost&&pose&&!showBody?' · <span style="opacity:.6">ghost = original</span>':'')
     +(hc?` · hands: ${hc.left?'L':'–'}${hc.right?'R':'–'}`:' · hands: relaxed (no tracking data)')
     +(S.rig?` · <b>${esc($('#rigSel').selectedOptions[0].textContent)}</b> (as exported${S.rig.skinF&&opt.body?', body':S.rig.mesh===false&&opt.body?' — no body FBX in mannequins/, showing skeleton':''})`:'');
   $('#frInfo').textContent=`${f} / ${T()-1}   ${(f/S.orig.fps).toFixed(2)} s`+(S.trim?`   out: ${S.trim[1]-S.trim[0]+1} f`:'');

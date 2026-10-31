@@ -166,10 +166,50 @@ def _body_frames(V, up, left):
         'foot_l': _frame(V['lto'] - V['lan'], legL), 'foot_r': _frame(V['rto'] - V['ran'], legR),
     }
     if 'lear' in V:
+        # the 'head' keypoint sits forward of the skull top (constant forward pitch) and AI
+        # face points are unreliable: the neutral is calibrated against the chest in retarget()
         F['head'] = _frame(V['top'] - V['headmid'], V['lear'] - V['rear'])
     else:
         F['head'] = _frame(up, left)
     return F
+
+
+NECK_MAX = 45.0             # deg, head motion around its neutral relative to the chest
+FOOT_YAW_MAX = 30.0          # deg, ankle/subtalar rotation of the foot around the shank
+FOOT_PITCH_RANGE = (-25.0, 45.0)   # deg around the clip's neutral (dorsi-, plantarflexion)
+
+
+def _fix_feet(V, fps):
+    """AI-video foot keypoints often flip heel/toe or swing sideways. Re-express each
+    ankle->toe direction in the leg's own frame, reject impossible frames (toe behind the
+    ankle, sideways > FOOT_YAW_MAX), clamp to the ankle range, fill and smooth. In place."""
+    T = len(V['hip'])
+    pel_x = V['lhip'] - V['rhip']
+    up = _n(V['neck'] - V['hip'])
+    fwd_p = _n(np.cross(pel_x, up))                          # pelvis forward
+    for k, side in (('l', 1.0), ('r', -1.0)):
+        an, kn, to = V[k + 'an'], V[k + 'kn'], V[k + 'to']
+        n = _n(an - kn)                                       # shank, pointing down
+        f = _n(fwd_p - (fwd_p * n).sum(-1, keepdims=True) * n)   # leg forward, perpendicular to shank
+        l = np.cross(n, f)
+        d = to - an
+        L = np.linalg.norm(d, axis=-1)
+        Lm = float(np.median(L)) if np.isfinite(L).any() else 0.12
+        df, dl, dn = (d * f).sum(-1), (d * l).sum(-1), (d * n).sum(-1)
+        yaw = np.degrees(np.arctan2(dl, df))
+        pitch = np.degrees(np.arctan2(dn, np.hypot(df, dl)))
+        good = (df > 0) & (np.abs(yaw) < 60) & (L > 0.4 * Lm) & (L < 2.0 * Lm)
+        if good.sum() < 5:                                    # nothing usable: foot follows the shank
+            yaw = np.zeros(T); pitch = np.full(T, 35.0); good = np.ones(T, bool)
+        t = np.arange(T)
+        yaw = np.interp(t, t[good], yaw[good]); pitch = np.interp(t, t[good], pitch[good])
+        neutral = float(np.median(pitch[good]))
+        yaw = np.clip(yaw, -FOOT_YAW_MAX, FOOT_YAW_MAX)
+        pitch = np.clip(pitch, neutral + FOOT_PITCH_RANGE[0], neutral + FOOT_PITCH_RANGE[1])
+        yaw, pitch = _lowpass(yaw, fps, 5.0), _lowpass(pitch, fps, 5.0)
+        y, p = np.radians(yaw)[:, None], np.radians(pitch)[:, None]
+        dd = np.cos(p) * (np.cos(y) * f + np.sin(y) * l) + np.sin(p) * n
+        V[k + 'to'] = an + Lm * dd
 
 
 def _euler_continuous(R):
@@ -216,6 +256,7 @@ def retarget(P, fps, rig, hands=None, contacts=None, root_motion=False, smooth_h
     X = (P @ B.T) * scale
 
     V = _points(X)
+    _fix_feet(V, fps)
     V0 = _rest_points(m, G0)
     up_t = np.broadcast_to(u_r, (T, 3)); left_t = np.broadcast_to(l_r, (T, 3))
     F = _body_frames(V, up_t, left_t)
@@ -233,6 +274,18 @@ def retarget(P, fps, rig, hands=None, contacts=None, root_motion=False, smooth_h
         ax = _n(np.cross(d0, u_r))
         Radj = Rotation.from_rotvec(ax * (pitch_m - pitch_r)).as_matrix()
         F0['foot_' + k] = Radj @ F0['foot_' + k]
+
+    # neutral head = the clip's average head pose relative to the chest (AI face keypoints
+    # have no reliable absolute 'level'); motion around it is kept
+    rel = np.swapaxes(F['chest'], -1, -2) @ F['head']
+    rn = Rotation.from_matrix(rel).mean().as_matrix()
+    dev = Rotation.from_matrix(rn.T @ rel).as_rotvec()                 # head motion around neutral
+    a = np.linalg.norm(dev, axis=-1, keepdims=True)
+    lim = np.radians(NECK_MAX)
+    dev = np.where(a > lim, dev * lim / np.maximum(a, 1e-9), dev)
+    dev = _lowpass(dev, fps, 6.0)
+    F['head'] = F['chest'] @ rn @ Rotation.from_rotvec(dev).as_matrix()
+    F0['head'] = F0['chest'] @ rn
 
     D = {k: F[k] @ np.swapaxes(F0[k], -1, -2) for k in F}        # global delta rotations (T,3,3)
     Rg = {}                                                       # driven global rotations
