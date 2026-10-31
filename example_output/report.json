@@ -1,0 +1,132 @@
+{
+  "views": 4,
+  "frames": 240,
+  "fps": 30.0,
+  "options": {
+    "yaws": null,
+    "fov": 40.0,
+    "height": 1.75,
+    "cutoff": 6.0,
+    "reproj_thr": 0.03,
+    "min_conf": 0.3,
+    "ba_frames": 80,
+    "swap_lambda": 0.02
+  },
+  "glitch_view_frames": 22,
+  "glitch_keypoints": 842,
+  "calibration_score": 0.002197318949657713,
+  "swaps": {
+    "legs": [
+      0,
+      0,
+      101,
+      35
+    ],
+    "arms": [
+      0,
+      7,
+      0,
+      10
+    ],
+    "face": [
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "inconsistent_view_frames": 0,
+  "reproj_err_median_per_view": [
+    0.002656648211507524,
+    0.002627503540551688,
+    0.002416085901390187,
+    0.0024312467784650916
+  ],
+  "views_used_mean": 3.6344551282051283,
+  "filled_samples_pct": 0.36858974358974356,
+  "spikes_removed": 286,
+  "global_mirror_fixed": false,
+  "scale": 1.0167874601427014,
+  "knee_hyperextension_fixed": 0,
+  "ground_clamped_samples": 4,
+  "metrics": {
+    "raw": {
+      "bone_length_cv_pct": 41.66057501940196,
+      "mean_accel_m_s2": 76.3035467055761,
+      "ground_penetration_frames": 16,
+      "foot_skate_m_s": 1.044558385742062
+    },
+    "triangulated": {
+      "bone_length_cv_pct": 2.984395139583823,
+      "mean_accel_m_s2": 3.3336840308895606,
+      "ground_penetration_frames": 0,
+      "foot_skate_m_s": 0.037419643261857025
+    },
+    "final": {
+      "bone_length_cv_pct": 0.01921126572156194,
+      "mean_accel_m_s2": 2.9382185464147312,
+      "ground_penetration_frames": 0,
+      "foot_skate_m_s": 2.9700982567551178e-06
+    }
+  },
+  "contact_pct": {
+    "left": 73.33333333333333,
+    "right": 81.25
+  },
+  "bone_lengths_m": {
+    "hip-left_hip": 0.1020123388321807,
+    "hip-right_hip": 0.1020123388321807,
+    "hip-neck": 0.528863064259166,
+    "neck-head": 0.2544493580848394,
+    "neck-nose": 0.1820536703286783,
+    "nose-left_eye": 0.05090673124083932,
+    "nose-right_eye": 0.05090673124083932,
+    "left_eye-left_ear": 0.12459481250688209,
+    "right_eye-right_ear": 0.12459481250688209,
+    "neck-left_shoulder": 0.18276682182047194,
+    "neck-right_shoulder": 0.18276682182047194,
+    "left_shoulder-left_elbow": 0.3047966964747136,
+    "left_elbow-left_wrist": 0.26419184310042815,
+    "right_shoulder-right_elbow": 0.3047966964747136,
+    "right_elbow-right_wrist": 0.26419184310042815,
+    "left_hip-left_knee": 0.45668240417893136,
+    "left_knee-left_ankle": 0.437094571104169,
+    "right_hip-right_knee": 0.45668240417893136,
+    "right_knee-right_ankle": 0.437094571104169,
+    "left_ankle-left_heel": 0.07911899809404509,
+    "left_ankle-left_big_toe": 0.16847657068762215,
+    "left_ankle-left_small_toe": 0.14635014115447836,
+    "right_ankle-right_heel": 0.07911899809404509,
+    "right_ankle-right_big_toe": 0.16847657068762215,
+    "right_ankle-right_small_toe": 0.14635014115447836,
+    "left_heel-left_big_toe": 0.20349911244569535,
+    "right_heel-right_big_toe": 0.20349911244569535,
+    "left_hip-right_hip": 0.20387912627857843,
+    "left_shoulder-right_shoulder": 0.3653654529214832
+  },
+  "seconds": 57.2,
+  "synthetic_validation": {
+    "mpjpe_mm": {
+      "raw": [
+        64.87275944362702,
+        165.1963907980351
+      ],
+      "triangulated": [
+        5.305699623620609,
+        10.27725365459761
+      ],
+      "final": [
+        4.242045488182762,
+        9.134613128651504
+      ]
+    },
+    "defects": {
+      "swapped_leg_frames_back": 101,
+      "swapped_arm_frames_side": 7,
+      "swapped_leg_frames_side": 30,
+      "morph_view_frames": 26,
+      "hallucinated_frames": 12
+    },
+    "bvh_fk_err_mm": 3.925130273553069
+  }
+}

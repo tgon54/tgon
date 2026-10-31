@@ -1,0 +1,319 @@
+"""End-to-end pipeline: AI multi-view video -> corrected 3D motion + exports + report."""
+import os
+import json
+import time
+import numpy as np
+
+from . import cameras as C
+from . import correct as K
+from .skeleton import NAMES, BONES, J, FLIP, center_of_mass, joint_angles, IDX
+from .physics import anthropometric_lengths
+
+
+DEFAULTS = dict(
+    yaws=None,            # e.g. [0,90,180,270]; None = auto (tests both rotation directions)
+    fov=40.0,             # initial guess, refined by bundle adjustment
+    height=1.75,          # subject height in meters (sets absolute scale)
+    cutoff=6.0,           # Butterworth cutoff Hz
+    reproj_thr=0.03,      # outlier threshold (fraction of panel height)
+    min_conf=0.3,
+    ba_frames=80,
+    swap_lambda=0.02,
+    weight=70.0,          # body mass in kg (ground reaction forces)
+    physics=True,         # gravity / contact / balance pass
+)
+
+
+def _sample_frames(conf, n):
+    T = conf.shape[1]
+    score = conf.mean((0, 2))
+    idx = np.argsort(-score)[: max(n * 3, n)]
+    idx = np.sort(idx)
+    if len(idx) > n:
+        idx = idx[np.linspace(0, len(idx) - 1, n).astype(int)]
+    return idx
+
+
+def _physics(Xp, cont, L, q, fps, o, rep, log):
+    """Gravity/contact/balance pass + ground reaction forces (needs body mass)."""
+    from .skeleton import FOOT
+    from .physics import simulate
+    T = len(Xp)
+    if not o.get('physics', True) or T < 10:
+        return Xp, np.zeros((T, 3)), np.zeros(T, bool)
+
+    def repin(P):
+        P, pinned = K.fix_foot_skating(P, cont)
+        P = K.enforce_bones(P, L, q, iters=10, heavy=pinned)
+        return K.clamp_ground(P)[0]
+    Xp, prep, F, air = simulate(Xp, fps, center_of_mass, FOOT, cont, o.get('weight', 70.0), repin, log)
+    rep['physics'] = prep
+    return Xp, F, air
+
+
+def calibrate(kp, conf, sizes, o, log=print):
+    best = None
+    for yaws in C.candidate_yaw_sets(len(sizes), o['yaws']):
+        cams = C.nominal_cameras(sizes, yaws, kp, conf, fov_deg=o['fov'])
+        log(f'  testing camera layout yaws={[round(y) for y in yaws]}')
+        err = None
+        for r in range(2):
+            uv, cf, _ = C.resolve_swaps(cams, kp, conf, lam=o['swap_lambda'], min_conf=o['min_conf'], **o.get('_swap', {}))
+            fr = _sample_frames(cf, o['ba_frames'])
+            cams2, err2 = C.bundle_adjust(cams, uv, cf, fr, log=log)
+            if err2 is None:
+                break
+            cams, err = cams2, err2
+        if err is None:
+            err = 1e9
+        log(f'    -> score {err:.5f}')
+        if best is None or err < best[0]:
+            best = (err, cams, yaws)
+    best[1].yaws = best[2]
+    return best[1], best[0]
+
+
+def reconstruct(kp, conf, sizes, fps, opts=None, log=print, hands2d=None):
+    """hands2d: optional (hand kp (V,T,2,21,2), hand conf (V,T,2,21)) -> res['hands']."""
+    o = dict(DEFAULTS, **(opts or {}))
+    V, T = kp.shape[:2]
+    rep = {'views': V, 'frames': T, 'fps': fps, 'options': {k: v for k, v in o.items()}}
+    t0 = time.time()
+
+    # 1) 2D AI-glitch screening
+    conf_g, gflags = K.flag_2d_glitches(kp, conf)
+    rep['glitch_view_frames'] = int(gflags.sum())
+    rep['glitch_keypoints'] = int(((conf > o['min_conf']) & (conf_g == 0)).sum())
+    log(f'  AI glitch screening: {rep["glitch_keypoints"]} keypoints, {rep["glitch_view_frames"]} whole view-frames rejected')
+
+    # 2) self-calibration of virtual cameras
+    cams, score = calibrate(kp, conf_g, sizes, o, log)
+    rep['calibration_score'] = float(score)
+
+    # 3) left/right swap resolution with refined cameras
+    uv, cf, dec = C.resolve_swaps(cams, kp, conf_g, lam=o['swap_lambda'], min_conf=o['min_conf'])
+    rep['swaps'] = {g: d.sum(0).tolist() for g, d in dec.items()}
+    log(f'  L/R swaps fixed per view: {rep["swaps"]}')
+
+    # 4) robust triangulation + inconsistent-view rejection
+    X, err, used, q = C.robust_triangulate(cams, uv, cf, thr=o['reproj_thr'], min_conf=o['min_conf'])
+    badv = K.flag_inconsistent_views(err, used, o['reproj_thr'])
+    rep['inconsistent_view_frames'] = int(badv.sum())
+    if badv.any():
+        cf = np.where(badv[..., None], 0, cf)
+        X, err, used, q = C.robust_triangulate(cams, uv, cf, thr=o['reproj_thr'], min_conf=o['min_conf'])
+    e_used = np.where(used, err, np.nan)
+    rep['reproj_err_median_per_view'] = [float(np.nanmedian(e_used[v])) if np.isfinite(e_used[v]).any() else None for v in range(V)]
+    rep['views_used_mean'] = float(used.sum(0).mean())
+
+    # baseline ("raw"): nominal cameras, no screening, no swap fix, plain DLT
+    cam_nom = C.nominal_cameras(sizes, cams.yaws, kp, conf, fov_deg=o['fov'])
+    Xraw = C.triangulate(cam_nom, kp, np.where(conf > o['min_conf'], conf, 0))
+
+    # 5) temporal: gaps, spikes, zero-phase low-pass
+    Xf, filled = K.fill_gaps(X, q)
+    rep['filled_samples_pct'] = float(filled.mean() * 100)
+    Xf, nsp = K.hampel(Xf)
+    rep['spikes_removed'] = nsp
+    Xf = K.butter_lowpass(Xf, fps, o['cutoff'])
+
+    # 6) world: mirror check, ground plane, facing, metric scale
+    Xf, mir = K.fix_global_mirror(Xf)
+    if mir:
+        q = q[:, FLIP]
+    rep['global_mirror_fixed'] = bool(mir)
+    Xw, scale = K.align_world(Xf, o['height'])
+    rep['scale'] = float(scale)
+    stage_tri = Xw.copy()
+
+    # 7) anatomy (+ natural human proportions)
+    L = K.bone_targets(Xw, q)
+    L, rep['anthropometric_clamped_bones'] = anthropometric_lengths(L, BONES, o['height'], tol=o.get('anthro_tol', 0.2))
+    Xa = K.enforce_bones(Xw, L, q)
+    Xa, nk = K.fix_knee_hyperextension(Xa)
+    rep['knee_hyperextension_fixed'] = nk
+
+    # 8) physics
+    cont = K.foot_contacts(Xa, fps)
+    Xp, pinned = K.fix_foot_skating(Xa, cont)
+    Xp = K.enforce_bones(Xp, L, q, iters=15, heavy=pinned)
+    Xp, npen = K.clamp_ground(Xp)
+    rep['ground_clamped_samples'] = npen
+    Xp, F, air = _physics(Xp, cont, L, q, fps, o, rep, log)
+
+    # 9) smart hands: triangulate 21-point hands, follow arm L/R decisions, attach to wrists
+    hands = None
+    if hands2d is not None and hands2d[0] is not None:
+        from .hands import reconstruct_hands
+        hands = reconstruct_hands(cams, hands2d[0], hands2d[1], dec['arms'], Xf, Xw, Xp, mir, fps,
+                                  min_conf=o['min_conf'])
+        rep['hands_tracked_pct'] = {s: (float((np.median(hands['conf_' + s], 1) > 0.5).mean() * 100)
+                                        if hands[s] is not None else 0.0) for s in ('left', 'right')}
+        log(f'  hands tracked (% frames): {rep["hands_tracked_pct"]}')
+
+    # raw aligned for comparison
+    Xr, _ = K.fill_gaps(Xraw, np.isfinite(Xraw).all(-1).astype(float))
+    Xr, _ = K.fix_global_mirror(Xr)
+    try:
+        Xr, _ = K.align_world(Xr, o['height'])
+    except Exception:
+        pass
+
+    rep['metrics'] = {
+        'raw': K.metrics(Xr, fps, cont),
+        'triangulated': K.metrics(stage_tri, fps, cont),
+        'final': K.metrics(Xp, fps, cont),
+    }
+    rep['contact_pct'] = {s: float(m.mean() * 100) for s, m in cont.items()}
+    rep['bone_lengths_m'] = {f'{a}-{b}': float(l) for (a, b), l in zip(BONES, L)}
+    rep['seconds'] = round(time.time() - t0, 1)
+    log(f'  metrics: {json.dumps(rep["metrics"])}')
+
+    return dict(final=Xp, raw=Xr, triangulated=stage_tri, quality=q, contacts=cont,
+                cameras=cams, err=err, used=used, gflags=gflags, swaps=dec, report=rep,
+                com=center_of_mass(Xp), angles=joint_angles(Xp), fps=fps, hands=hands, grf=F, airborne=air)
+
+
+# ----------------------------------------------------------------- export --
+def export_all(res, out, log=print):
+    from .viewer import write_viewer
+    from .bvh import write_bvh
+    from .report import write_report
+    os.makedirs(out, exist_ok=True)
+    P, fps, T = res['final'], res['fps'], len(res['final'])
+    t = np.arange(T) / fps
+    # scientific arrays
+    np.save(os.path.join(out, 'body_3d_xyz_m.npy'), P)
+    np.save(os.path.join(out, 'body_3d_raw_xyz_m.npy'), res['raw'])
+    np.save(os.path.join(out, 'body_3d_quality.npy'), res['quality'])
+    np.save(os.path.join(out, 'center_of_mass_xyz_m.npy'), res['com'])
+    hdr = ['frame', 'time_s'] + [f'{n}_{a}' for n in NAMES for a in 'xyz']
+    rows = np.concatenate([np.arange(T)[:, None], t[:, None], P.reshape(T, -1)], 1)
+    np.savetxt(os.path.join(out, 'body_3d_xyz_m.csv'), rows, delimiter=',', header=','.join(hdr), comments='', fmt='%.5f')
+    ang = res['angles']
+    hdr = ['frame', 'time_s'] + list(ang) + ['com_x', 'com_y', 'com_z', 'contact_left', 'contact_right']
+    rows = np.column_stack([np.arange(T), t] + [ang[k] for k in ang] + [res['com'], res['contacts']['left'], res['contacts']['right']])
+    np.savetxt(os.path.join(out, 'angles_com_contacts.csv'), rows, delimiter=',', header=','.join(hdr), comments='', fmt='%.4f')
+    # game / animation
+    write_bvh(P, fps, os.path.join(out, 'motion.bvh'))
+    if res.get('cameras') is not None:
+        res['cameras'].to_anipose_toml(os.path.join(out, 'virtual_cameras_calibration.toml'))
+    if res.get('grf') is not None:
+        from .physics import write_physics_csv
+        write_physics_csv(os.path.join(out, 'physics_com_grf.csv'), res['com'], res['grf'], res['airborne'],
+                          fps, res['report'].get('physics', {}).get('mass_kg', 70.0))
+    r = lambda a: np.round(a, 4).tolist()
+    data = dict(fps=fps, joints=NAMES, bones=[list(b) for b in BONES], corrected=r(P), raw=r(res['raw']),
+                quality=np.round(res['quality'], 2).tolist(), com=r(res['com']),
+                contacts={k: v.astype(int).tolist() for k, v in res['contacts'].items()})
+    hands = res.get('hands')
+    if hands:
+        data['hands'] = {k: (r(v) if k in ('left', 'right') else np.round(v, 2).tolist()) if v is not None else None
+                         for k, v in hands.items()}
+        for side in ('left', 'right'):
+            if hands[side] is not None:
+                np.save(os.path.join(out, f'hand_{side}_3d_xyz_m.npy'), hands[side])
+    json.dump(dict(data, raw=None), open(os.path.join(out, 'motion.json'), 'w'), separators=(',', ':'))
+    write_viewer(dict(data, hands=None), os.path.join(out, 'viewer.html'))
+    # Unreal Engine: animation baked on the UE4 Mannequin and UE5 Manny skeletons
+    # (plus every usable skeleton dropped into the mannequins/ folder)
+    from .unreal import export_unreal, target_tag
+    from .rig import list_targets
+    for t in list_targets():
+        if not t['ok']:
+            log(f"  skipped {t['source']}: {t['error']}")
+            continue
+        try:
+            export_unreal(P, fps, os.path.join(out, f"motion_{target_tag(t['id'])}.fbx"), t['id'], hands,
+                          res['contacts'], log=log)
+        except Exception as e:
+            log(f"  Unreal {t['id']} export failed: {type(e).__name__}: {e}")
+    json.dump(res['report'], open(os.path.join(out, 'report.json'), 'w'), indent=2, default=float)
+    write_report(res, os.path.join(out, 'report.html'))
+    log('  exported: motion.bvh, motion.json, viewer.html, report.html, CSV/NPY, calibration TOML')
+
+
+def _panels(video, grid, panels, log):
+    from . import video as Vd
+    import cv2
+    cap = cv2.VideoCapture(video); W = int(cap.get(3)); H = int(cap.get(4)); cap.release()
+    if isinstance(grid, (tuple, list)):
+        xb, yb = [int(v) for v in grid[0]], [int(v) for v in grid[1]]
+    elif grid != 'auto':
+        xb, yb = Vd.grid_from_spec(grid, W, H)
+    else:
+        xb, yb = Vd.detect_grid(video)
+    pans = Vd.panels_from_grid(xb, yb)
+    use = panels if panels is not None else list(range(len(pans)))
+    log(f'grid columns={xb} rows={yb} -> {len(pans)} panels, using {use}')
+    return pans, use
+
+
+def run(video, out, grid='auto', panels=None, opts=None, mode='performance', device='auto',
+        max_frames=None, log=print, hands=True, subject='human', single_view=None):
+    """subject: 'human' | 'dog' | 'horse'. One selected panel (or single_view=True) uses the
+    single-camera solver; two or more use multi-view triangulation."""
+    if subject != 'human':
+        from .animal import run as run_animal
+        return run_animal(video, out, subject, grid, panels, opts, 'lightweight' if mode == 'lightweight' else 'balanced',
+                          device, max_frames, log)
+    if single_view or (panels is not None and len(panels) == 1):
+        return run_single(video, out, grid, panels, opts, device, max_frames, log, hands)
+    from . import video as Vd
+    os.makedirs(out, exist_ok=True)
+    cache = os.path.join(out, 'detections_2d.npz')
+    hk = hs = None
+    if os.path.exists(cache):
+        d = np.load(cache, allow_pickle=True)
+        kp, conf, fps, sizes = d['kp'], d['conf'], float(d['fps']), [tuple(s) for s in d['sizes']]
+        log(f'loaded cached 2D detections ({cache})')
+        if 'hkp' in d:
+            hk, hs = d['hkp'], d['hconf']
+        elif hands:
+            from .hands import HandDetector, detect_hands_video
+            pans, use = _panels(video, grid, panels, log)
+            hdet = HandDetector(device='cuda' if device in ('auto', 'cuda') else 'cpu')
+            log('2D hand detection (RTMPose hand) on cached body poses...')
+            hk, hs = detect_hands_video(video, pans, use, kp, conf, hdet, max_frames, log=log)
+            np.savez(cache, kp=kp, conf=conf, fps=fps, sizes=np.array(sizes), hkp=hk, hconf=hs)
+    else:
+        pans, use = _panels(video, grid, panels, log)
+        if len(use) < 2:
+            log('one view found -> single-camera mode')
+            return run_single(video, out, grid, use, opts, device, max_frames, log, hands)
+        det = Vd.Detector(mode=mode, device=device)
+        log(f'2D detector: RTMPose Halpe-26 ({mode}) on {det.device}')
+        hdet = None
+        if hands:
+            from .hands import HandDetector
+            hdet = HandDetector(device=det.device)
+            log('2D hand detector: RTMPose hand-21 (smart hand motion)')
+        kp, conf, fps, sizes, hk, hs = Vd.detect_video(video, pans, use, det, out, max_frames, log=log, hand_det=hdet)
+        extra = dict(hkp=hk, hconf=hs) if hk is not None else {}
+        np.savez(cache, kp=kp, conf=conf, fps=fps, sizes=np.array(sizes), **extra)
+    log('3D reconstruction + smart correction...')
+    res = reconstruct(kp, conf, sizes, fps, opts, log, hands2d=(hk, hs) if hands and hk is not None else None)
+    export_all(res, out, log)
+    return res
+
+
+def run_single(video, out, grid='auto', panels=None, opts=None, device='auto', max_frames=None, log=print, hands=True):
+    """Single camera (any direction): RTMW3D whole-body 3D + the same correction and physics."""
+    from .mono import MonoDetector, detect_video_mono, reconstruct_mono
+    os.makedirs(out, exist_ok=True)
+    cache = os.path.join(out, 'detections_mono.npz')
+    if os.path.exists(cache):
+        d = np.load(cache)
+        uv, z, s, fps, size = d['uv'], d['z'], d['s'], float(d['fps']), tuple(d['size'])
+        log(f'loaded cached single-view detections ({cache})')
+    else:
+        pans, use = _panels(video, grid, panels, log)
+        pan = pans[use[0]]
+        det = MonoDetector(device)
+        log(f'single-camera 3D detector: RTMW3D whole-body (panel {use[0]}) on {det.device}')
+        uv, z, s, fps, size = detect_video_mono(video, pan, det, out, max_frames, log=log)
+        np.savez(cache, uv=uv, z=z, s=s, fps=fps, size=np.array(size))
+    log('3D (single view) + smart correction + physics...')
+    res = reconstruct_mono(uv, z, s, fps, size, dict(opts or {}, hands=hands), log)
+    export_all(res, out, log)
+    return res
