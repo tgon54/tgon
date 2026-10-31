@@ -1,0 +1,7 @@
+# Do NOT use "pip install -r" with rtmlib: it pulls the CPU onnxruntime.
+# Run instead:  install.bat   (or: python -m aimocap.setup_env)
+numpy>=1.24
+scipy>=1.10
+opencv-python>=4.8
+matplotlib>=3.7
+tqdm

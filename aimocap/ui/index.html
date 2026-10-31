@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI-MoCap</title>
+<style>
+:root{
+  --bg:#0a0e13;--panel:#11171f;--panel2:#161e28;--line:#223040;--line2:#2c3d50;
+  --fg:#e6edf4;--mut:#8b9aab;--dim:#5f6f80;
+  --acc:#2ed3c6;--acc2:#1a9e94;--accbg:rgba(46,211,198,.12);
+  --ok:#5ad08a;--warn:#f0b14a;--bad:#f06a6a;--left:#ff9a3c;--right:#4f8cff;
+  --r:12px;--sh:0 10px 30px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:14px/1.55 "Segoe UI",Tahoma,"Noto Sans Arabic",system-ui,sans-serif;display:flex;flex-direction:column}
+button,input,select{font:inherit;color:inherit}
+a{color:var(--acc)}
+.ltr{direction:ltr;unicode-bidi:isolate}
+/* top bar */
+.top{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;letter-spacing:.2px}
+.logo svg{width:28px;height:28px}
+.top .sub{color:var(--mut);font-size:12.5px}
+.top .sp{flex:1}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;border:1px solid var(--line2);color:var(--mut);font-size:12px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}.dot.run{background:var(--acc);animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.35}}
+/* layout */
+.wrap{flex:1;display:grid;grid-template-columns:270px 1fr;min-height:0}
+aside{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:14px 12px;display:flex;flex-direction:column;gap:6px}
+main{overflow:auto;padding:22px 26px 110px}
+.side-h{display:flex;justify-content:space-between;align-items:center;color:var(--mut);font-size:12px;margin:10px 4px 4px}
+.newbtn{width:100%;justify-content:center}
+.item{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+.item:hover{background:var(--panel2)}
+.item.on{background:var(--accbg);border-color:rgba(46,211,198,.35)}
+.item .t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+.item .m{font-size:11.5px;color:var(--dim)}
+.item .dot{margin-top:6px}
+.empty{color:var(--dim);font-size:12.5px;padding:6px 10px}
+/* cards */
+h1{font-size:20px;margin:0 0 4px}
+.lead{color:var(--mut);margin:0 0 20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:16px}
+.card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:10px}
+.num{width:24px;height:24px;border-radius:50%;background:var(--accbg);color:var(--acc);display:inline-grid;place-items:center;font-size:12.5px;font-weight:700;flex:none}
+.card.off{opacity:.45;pointer-events:none}
+.hint{color:var(--mut);font-size:12.5px}
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:9px;border:1px solid var(--line2);background:var(--panel2);cursor:pointer;transition:.15s}
+.btn:hover{border-color:var(--acc2)}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#04201d;font-weight:700}
+.btn.pri:hover{background:#4fe3d7}
+.btn.pri:disabled{background:var(--line2);border-color:var(--line2);color:var(--dim);cursor:not-allowed}
+.btn.danger{color:var(--bad)}
+.btn.sm{padding:5px 10px;font-size:12.5px}
+.btn svg{width:16px;height:16px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:9px;overflow:hidden}
+.seg button{background:transparent;border:0;padding:7px 13px;cursor:pointer;color:var(--mut);border-left:1px solid var(--line2)}
+.seg button:last-child{border-left:0}
+.seg button.on{background:var(--accbg);color:var(--acc)}
+/* upload */
+.drop{border:1.5px dashed var(--line2);border-radius:var(--r);padding:30px;text-align:center;cursor:pointer;transition:.15s;background:var(--panel2)}
+.drop:hover,.drop.over{border-color:var(--acc);background:var(--accbg)}
+.drop svg{width:38px;height:38px;color:var(--acc)}
+.drop b{display:block;margin:8px 0 2px;font-size:15px}
+.bar{height:6px;background:var(--line);border-radius:9px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--acc);width:0;transition:width .3s}
+.vids{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.vinfo{display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.vinfo .k{color:var(--mut);font-size:12px}.vinfo .v{font-weight:600}
+/* grid editor */
+.gtools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.stage{position:relative;background:#000;border-radius:10px;overflow:hidden;border:1px solid var(--line);user-select:none}
+.stage canvas{display:block;width:100%;height:auto;touch-action:none}
+.scrub{display:flex;gap:10px;align-items:center;margin-top:10px}
+.scrub input{flex:1;accent-color:var(--acc)}
+.views{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:14px}
+.view{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.view .badge{width:28px;height:28px;border-radius:8px;background:var(--acc);color:#04201d;display:grid;place-items:center;font-weight:700;flex:none}
+.view select{flex:1;min-width:0}
+select,input[type=number]{background:var(--bg);border:1px solid var(--line2);border-radius:8px;padding:7px 9px}
+select:disabled{color:var(--dim)}
+.sw{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:var(--mut)}
+.sw input{display:none}
+.sw span{width:36px;height:20px;border-radius:99px;background:var(--line2);position:relative;transition:.15s}
+.sw span:after{content:"";position:absolute;top:3px;right:3px;width:14px;height:14px;border-radius:50%;background:var(--fg);transition:.15s}
+.sw input:checked+span{background:var(--acc2)}
+.sw input:checked+span:after{right:19px}
+/* settings */
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px 22px}
+.field label{display:block;color:var(--mut);font-size:12.5px;margin-bottom:6px}
+.field .row{display:flex;gap:10px;align-items:center}
+.field input[type=range]{flex:1;accent-color:var(--acc)}
+.field input[type=number]{width:90px}
+details{margin-top:14px}
+summary{cursor:pointer;color:var(--mut);font-size:13px}
+/* action bar */
+.action{position:fixed;bottom:0;left:0;right:270px;padding:12px 26px;background:linear-gradient(transparent,var(--bg) 35%);display:flex;justify-content:flex-start;align-items:center;gap:14px;pointer-events:none}
+.action>*{pointer-events:auto}
+.action .sum{color:var(--mut);font-size:12.5px}
+/* job */
+.jhead{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.jhead .sp{flex:1}
+.status{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:99px;font-size:12.5px;background:var(--panel2);border:1px solid var(--line2)}
+.prog{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums}
+.stages{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}
+.st{padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--dim);display:flex;gap:8px;align-items:center;font-size:13px}
+.st.cur{color:var(--fg);border-color:var(--acc2)}
+.st.done{color:var(--ok)}
+.log{background:#070a0e;border:1px solid var(--line);border-radius:10px;padding:10px 12px;height:260px;overflow:auto;font:12px/1.6 Consolas,"Cascadia Mono",monospace;color:#aebdcc;direction:ltr;text-align:left;white-space:pre-wrap}
+.err{border:1px solid rgba(240,106,106,.5);background:rgba(240,106,106,.08);color:#ffb3b3;border-radius:10px;padding:12px 14px;margin-bottom:14px;direction:ltr;text-align:left;font-family:Consolas,monospace;font-size:12.5px;white-space:pre-wrap}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
+.kpi .l{color:var(--mut);font-size:12.5px}
+.kpi .v{font-size:24px;font-weight:700;margin:4px 0 2px;font-variant-numeric:tabular-nums}
+.kpi .d{font-size:12px;color:var(--dim)}
+.kpi .d b{color:var(--ok);font-weight:600}
+.facts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:0}
+.tabs button{background:transparent;border:0;border-bottom:2px solid transparent;padding:10px 14px;cursor:pointer;color:var(--mut)}
+.tabs button.on{color:var(--fg);border-bottom-color:var(--acc)}
+.frame{width:100%;height:68vh;border:1px solid var(--line);border-top:0;border-radius:0 0 var(--r) var(--r);background:#fff;display:block}
+.frame.dark{background:#0b0f14}
+.files{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;padding:16px;border:1px solid var(--line);border-top:0;border-radius:0 0 var(--r) var(--r);background:var(--panel)}
+.file{display:flex;gap:12px;align-items:center;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);text-decoration:none;color:var(--fg)}
+.file:hover{border-color:var(--acc2)}
+.file .ext{width:44px;height:44px;border-radius:9px;background:var(--accbg);color:var(--acc);display:grid;place-items:center;font-size:11px;font-weight:700;flex:none;direction:ltr}
+.file .n{font-size:13px;direction:ltr;text-align:right}
+.file .s{font-size:11.5px;color:var(--mut)}
+.toast{position:fixed;bottom:22px;left:22px;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:10px 16px;box-shadow:var(--sh);opacity:0;transform:translateY(10px);transition:.2s;z-index:9;max-width:420px}
+.toast.on{opacity:1;transform:none}
+.toast.bad{border-color:var(--bad);color:#ffc0c0}
+@media (max-width:900px){.top .sub{display:none}.wrap{grid-template-columns:1fr}aside{display:none}.action{right:0}.stages{grid-template-columns:1fr 1fr}main{padding:16px 16px 110px}}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="logo">
+    <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="16" cy="6" r="3" stroke="#2ed3c6"/><path d="M16 9v9M16 12l-6 4M16 12l6-3M16 18l-4 8M16 18l5 7" stroke="#e6edf4"/><path d="M3 22c2 3 5 5 8 6M29 22c-2 3-5 5-8 6" stroke="#2ed3c6" opacity=".55"/></svg>
+    AI-MoCap
+  </div>
+  <span class="sub">التقاط الحركة من فيديوهات الذكاء الاصطناعي مع التصحيح الذكي</span>
+  <span class="sp"></span>
+  <span class="chip" id="gpuChip"><span class="dot"></span><span>…</span></span>
+</div>
+
+<div class="wrap">
+  <aside>
+    <button class="btn pri newbtn" onclick="go('#new')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>معالجة جديدة</button>
+    <div class="side-h"><span>المعالجات السابقة</span></div>
+    <div id="jobList"></div>
+  </aside>
+
+  <main id="main"></main>
+</div>
+<div class="toast" id="toast"></div>
+
+<template id="tNew">
+  <h1>معالجة جديدة</h1>
+  <p class="lead">ارفع فيديو AI يحتوي على شبكة زوايا لنفس الحركة، وحدّد اللوحات، ثم ابدأ.</p>
+
+  <section class="card" id="cVideo">
+    <h2><span class="num">1</span>الفيديو</h2>
+    <div id="reuseNote" class="hint" hidden style="margin-bottom:10px"></div>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="video/*" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+      <b>اسحب الفيديو هنا أو اضغط للاختيار</b>
+      <span class="hint">MP4 / MOV / WEBM — فيديو واحد يحتوي على كل الزوايا</span>
+    </label>
+    <div id="upProg" hidden style="margin-top:12px"><div class="bar"><i id="upBar"></i></div><div class="hint" id="upTxt" style="margin-top:6px"></div></div>
+    <div id="vInfo" hidden></div>
+    <div class="vids" id="recent"></div>
+  </section>
+
+  <section class="card off" id="cGrid">
+    <h2><span class="num">2</span>الزوايا</h2>
+    <div class="gtools">
+      <span class="hint">الشبكة:</span>
+      <div class="seg" id="presets">
+        <button data-p="auto">تلقائي</button><button data-p="1x2">1×2</button><button data-p="2x2">2×2</button><button data-p="1x4">1×4</button><button data-p="2x3">2×3</button><button data-p="2x5">2×5</button>
+      </div>
+      <span class="hint">اسحب الخطوط لضبطها · اضغط على لوحة لاستبعادها أو إعادتها</span>
+    </div>
+    <div class="stage"><canvas id="cv"></canvas></div>
+    <div class="scrub"><span class="hint">معاينة</span><input type="range" id="scrub" min="0" max="0" value="0"><span class="hint ltr" id="scrubT">0.0s</span></div>
+    <div style="display:flex;align-items:center;gap:14px;margin-top:16px;flex-wrap:wrap">
+      <label class="sw"><input type="checkbox" id="autoYaw" checked><span></span>اتجاهات الكاميرات تلقائية (موصى به)</label>
+      <span class="hint" id="yawHint">تُقدِّر الأداة اتجاه كل كاميرا بالمعايرة الذاتية، وتختبر الترتيبين تلقائياً.</span>
+    </div>
+    <div class="views" id="views"></div>
+  </section>
+
+  <section class="card off" id="cSet">
+    <h2><span class="num">3</span>الإعدادات</h2>
+    <div class="form">
+      <div class="field"><label>طول الشخص (يحدد المقياس الحقيقي)</label>
+        <div class="row"><input type="range" id="hR" min="1.2" max="2.2" step="0.01" value="1.75"><input type="number" id="hN" min="0.5" max="2.6" step="0.01" value="1.75"><span class="hint">م</span></div></div>
+      <div class="field"><label>دقة الكشف</label>
+        <div class="seg" id="mode"><button data-v="performance" class="on">دقيق</button><button data-v="balanced">متوازن</button><button data-v="lightweight">سريع</button></div></div>
+      <div class="field"><label>المعالج</label>
+        <div class="seg" id="device"><button data-v="auto" class="on">تلقائي</button><button data-v="cuda">GPU</button><button data-v="cpu">CPU</button></div></div>
+      <div class="field"><label>عدد الإطارات (0 = الفيديو كاملاً)</label>
+        <div class="row"><input type="number" id="maxF" min="0" step="10" value="0"><span class="hint" id="maxFHint"></span></div></div>
+    </div>
+    <details><summary>إعدادات متقدمة</summary>
+      <div class="form" style="margin-top:14px">
+        <div class="field"><label>مجال الرؤية المبدئي (يُصحَّح تلقائياً)</label><div class="row"><input type="range" id="fovR" min="20" max="80" value="40"><input type="number" id="fovN" value="40"><span class="hint">°</span></div></div>
+        <div class="field"><label>تردد مرشّح التنعيم (أقل = أنعم)</label><div class="row"><input type="range" id="cutR" min="2" max="12" step="0.5" value="6"><input type="number" id="cutN" step="0.5" value="6"><span class="hint">Hz</span></div></div>
+      </div>
+    </details>
+  </section>
+
+  <div class="action">
+    <button class="btn pri" id="startBtn" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>ابدأ المعالجة</button>
+    <span class="sum" id="sum">اختر فيديو للبدء</span>
+  </div>
+</template>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const api=async(u,o={})=>{const r=await fetch(u,o);const j=await r.json().catch(()=>({error:'استجابة غير صالحة'}));if(!r.ok||j.error)throw new Error(j.error||r.statusText);return j};
+const fmtT=s=>new Date(s*1000).toLocaleString('ar',{dateStyle:'short',timeStyle:'short'});
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function toast(m,bad){const t=$('#toast');t.textContent=m;t.className='toast on'+(bad?' bad':'');clearTimeout(t._h);t._h=setTimeout(()=>t.className='toast',4200)}
+const YAWS=[[0,'أمام · \u20660°\u2069'],[45,'أمام-يسار · \u206645°\u2069'],[90,'يساره · \u206690°\u2069'],[135,'خلف-يسار · \u2066135°\u2069'],[180,'خلف · \u2066180°\u2069'],[225,'خلف-يمين · \u2066225°\u2069'],[270,'يمينه · \u2066270°\u2069'],[315,'أمام-يمين · \u2066315°\u2069']];
+const STAGES=[['detect','كشف ثنائي الأبعاد'],['calib','المعايرة الذاتية'],['correct','التصحيح الذكي'],['export','التصدير']];
+const STATUS={running:['run','قيد المعالجة'],done:['ok','مكتملة'],error:['bad','خطأ'],cancelled:['warn','ملغاة'],stopped:['warn','متوقفة']};
+
+/* ------------------------------------------------------------ sidebar */
+let jobsCache=[];
+async function loadJobs(){
+  try{jobsCache=await api('/api/jobs')}catch(e){return}
+  const cur=location.hash.split('/')[1];
+  $('#jobList').innerHTML=jobsCache.length?jobsCache.map(j=>{const s=STATUS[j.status]||['','?'];
+    const p=j.status==='running'?` · ${Math.round((j.progress||0)*100)}%`:'';
+    return `<div class="item ${j.id===cur?'on':''}" onclick="go('#job/${j.id}')"><span class="dot ${s[0]}"></span><div><div class="t" title="${esc(j.video_name)}">${esc(j.video_name)}</div><div class="m">${s[1]}${p} · ${fmtT(j.created)}</div></div></div>`}).join(''):'<div class="empty">لا توجد معالجات بعد</div>';
+}
+async function loadStatus(){
+  try{const s=await api('/api/status');const c=$('#gpuChip');
+    c.innerHTML=s.gpu?'<span class="dot ok"></span><span>GPU جاهز</span>':s.gpu===false?'<span class="dot warn"></span><span>يعمل على المعالج (CPU)</span>':'<span class="dot bad"></span><span>onnxruntime غير مثبت</span>';
+  }catch(e){}
+}
+
+/* ------------------------------------------------------------- router */
+let pollT=null;
+function go(h){if(location.hash===h)route();else location.hash=h}
+addEventListener('hashchange',route);
+function route(){clearTimeout(pollT);const h=location.hash||'#new';
+  if(h.startsWith('#job/'))showJob(h.split('/')[1]);else showNew(h.startsWith('#rerun/')?h.split('/')[1]:null);
+  loadJobs()}
+
+/* ------------------------------------------------------- new job view */
+let S=null;
+function defaults(){return {video:null,xs:[],ys:[],sel:[],yaws:{},autoYaw:true,frame:0,img:null,reuse:null,lock:false}}
+async function showNew(reuseId){
+  $('#main').innerHTML='';$('#main').append($('#tNew').content.cloneNode(true));
+  S=defaults();bindNew();
+  const vids=await api('/api/videos').catch(()=>[]);
+  $('#recent').innerHTML=vids.slice(0,8).map(v=>`<button class="btn sm" data-v="${v.id}" title="${esc(v.name)}">${esc(v.name.length>26?v.name.slice(0,24)+'…':v.name)}</button>`).join('');
+  $$('#recent button').forEach(b=>b.onclick=()=>pickVideo(vids.find(v=>v.id===b.dataset.v)));
+  if(reuseId){
+    const j=await api('/api/jobs/'+reuseId).catch(()=>null);
+    if(j){const v=await api('/api/videos/'+j.video);const s=j.settings;
+      S.reuse=reuseId;S.lock=true;
+      $('#reuseNote').hidden=false;$('#reuseNote').innerHTML=`إعادة التصحيح لـ <b>${esc(v.name)}</b> باستخدام نتائج الكشف المحفوظة — الشبكة واللوحات ثابتة، ويمكنك تغيير الاتجاهات والإعدادات. ستكون المعالجة سريعة.`;
+      $('#drop').hidden=true;$('#recent').hidden=true;
+      await pickVideo(v,{xs:s.xs,ys:s.ys,sel:s.panels,yaws:s.yaws});
+      setHeight(s.height);setSeg('#mode',s.mode);setSeg('#device',s.device);$('#maxF').value=s.max_frames||0;
+      $('#fovR').value=$('#fovN').value=s.fov;$('#cutR').value=$('#cutN').value=s.cutoff;summary();
+    }
+  }
+}
+function setSeg(id,v){$$(id+' button').forEach(b=>b.classList.toggle('on',b.dataset.v===v))}
+function seg(id){return $(id+' button.on').dataset.v}
+function setHeight(v){$('#hR').value=$('#hN').value=(+v).toFixed(2)}
+function bindNew(){
+  const drop=$('#drop'),file=$('#file');
+  file.onchange=()=>file.files[0]&&upload(file.files[0]);
+  ['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
+  ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
+  drop.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0];if(f)upload(f)});
+  $$('#mode button,#device button').forEach(b=>b.onclick=()=>{b.parentNode.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');summary()});
+  const link=(r,n)=>{$(r).oninput=()=>{$(n).value=$(r).value;summary()};$(n).oninput=()=>{$(r).value=$(n).value;summary()}};
+  link('#hR','#hN');link('#fovR','#fovN');link('#cutR','#cutN');
+  $('#maxF').oninput=summary;
+  $$('#presets button').forEach(b=>b.onclick=()=>applyPreset(b.dataset.p));
+  $('#autoYaw').onchange=()=>{S.autoYaw=$('#autoYaw').checked;renderViews();summary()};
+  $('#scrub').oninput=()=>{S.frame=+$('#scrub').value;$('#scrubT').textContent=(S.frame/S.video.fps).toFixed(1)+'s';loadFrame()};
+  $('#startBtn').onclick=start;
+  initCanvas();
+}
+function upload(f){
+  if(!/^video\//.test(f.type)&&!/\.(mp4|mov|webm|avi|mkv)$/i.test(f.name)){toast('الملف ليس فيديو',1);return}
+  $('#upProg').hidden=false;$('#upTxt').textContent='جارٍ الرفع… '+f.name;
+  const x=new XMLHttpRequest();x.open('POST','/api/upload');x.setRequestHeader('X-Filename',encodeURIComponent(f.name));
+  x.upload.onprogress=e=>{if(e.lengthComputable){$('#upBar').style.width=(e.loaded/e.total*100)+'%';$('#upTxt').textContent=`جارٍ الرفع… ${Math.round(e.loaded/e.total*100)}%`}};
+  x.onload=()=>{let j={};try{j=JSON.parse(x.responseText)}catch(e){}
+    if(x.status!==200||j.error){toast(j.error||'فشل الرفع',1);$('#upProg').hidden=true;return}
+    $('#upTxt').textContent='تم الرفع ✓';setTimeout(()=>$('#upProg').hidden=true,800);pickVideo(j)};
+  x.onerror=()=>{toast('فشل الرفع',1);$('#upProg').hidden=true};
+  x.send(f);
+}
+async function pickVideo(v,pre){
+  S.video=v;
+  $('#vInfo').hidden=false;
+  $('#vInfo').innerHTML=`<div class="vinfo" style="margin-top:12px"><div><div class="k">الملف</div><div class="v">${esc(v.name)}</div></div>
+   <div><div class="k">الدقة</div><div class="v ltr">${v.w}×${v.h}</div></div><div><div class="k">الإطارات</div><div class="v">${v.frames} · ${v.fps.toFixed(1)} fps</div></div>
+   <div><div class="k">المدة</div><div class="v">${(v.frames/v.fps).toFixed(1)} ث</div></div>${S.lock?'':'<span style="flex:1"></span><button class="btn sm" id="chg">تغيير</button>'}</div>`;
+  if(!S.lock){$('#chg').onclick=()=>{$('#drop').hidden=false;$('#vInfo').hidden=true;$('#drop').click()};$('#drop').hidden=true}
+  $('#cGrid').classList.remove('off');$('#cSet').classList.remove('off');
+  $('#scrub').max=Math.max(0,v.frames-1);S.frame=Math.min(Math.floor(v.frames/3),v.frames-1);$('#scrub').value=S.frame;$('#scrubT').textContent=(S.frame/v.fps).toFixed(1)+'s';
+  $('#maxFHint').textContent=`من ${v.frames}`;
+  if(pre){S.xs=pre.xs.slice();S.ys=pre.ys.slice();S.sel=pre.sel.slice();
+    if(pre.yaws){S.autoYaw=false;$('#autoYaw').checked=false;pre.sel.forEach((p,i)=>S.yaws[p]=pre.yaws[i])}}
+  else{S.xs=v.grid.xs.slice();S.ys=v.grid.ys.slice();resetSel()}
+  $$('#presets button').forEach(b=>{b.disabled=S.lock;b.classList.toggle('on',b.dataset.p==='auto'&&!pre)});
+  await loadFrame();renderViews();summary();
+  setTimeout(()=>$('#cGrid').scrollIntoView({behavior:'smooth',block:'start'}),50);
+}
+function nPanels(){return (S.xs.length-1)*(S.ys.length-1)}
+function resetSel(){S.sel=[...Array(nPanels()).keys()];S.yaws={};defaultYaws()}
+function defaultYaws(){const n=S.sel.length;const base=n===4?[0,90,180,270]:S.sel.map((_,i)=>Math.round(i*360/n/45)*45%360);S.sel.forEach((p,i)=>{if(S.yaws[p]==null)S.yaws[p]=base[i]??0})}
+function applyPreset(p){
+  if(!S.video||S.lock)return;
+  $$('#presets button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));
+  if(p==='auto'){S.xs=S.video.grid.xs.slice();S.ys=S.video.grid.ys.slice()}
+  else{const [r,c]=p.split('x').map(Number);S.xs=[...Array(c+1)].map((_,i)=>Math.round(S.video.w*i/c));S.ys=[...Array(r+1)].map((_,i)=>Math.round(S.video.h*i/r))}
+  resetSel();draw();renderViews();summary();
+}
+function loadFrame(){return new Promise(res=>{const im=new Image();im.onload=()=>{S.img=im;draw();res()};im.onerror=res;im.src=`/api/videos/${S.video.id}/frame?i=${S.frame}&w=1280`})}
+
+/* canvas grid editor */
+let cv,g,drag=null;
+function initCanvas(){cv=$('#cv');g=cv.getContext('2d');
+  const pos=e=>{const r=cv.getBoundingClientRect();return [(e.clientX-r.left)/r.width*S.video.w,(e.clientY-r.top)/r.height*S.video.h,S.video.w/r.width]};
+  const hit=(x,y,k)=>{const tol=9*k;for(let i=1;i<S.xs.length-1;i++)if(Math.abs(x-S.xs[i])<tol)return['x',i];for(let i=1;i<S.ys.length-1;i++)if(Math.abs(y-S.ys[i])<tol)return['y',i];return null};
+  cv.onpointermove=e=>{if(!S.video)return;const[x,y,k]=pos(e);
+    if(drag){const a=drag[0]==='x'?S.xs:S.ys,i=drag[1],lim=drag[0]==='x'?S.video.w:S.video.h;a[i]=Math.round(Math.max(a[i-1]+20,Math.min(a[i+1]-20,drag[0]==='x'?x:y)));drag.moved=true;draw();return}
+    const h=S.lock?null:hit(x,y,k);cv.style.cursor=h?(h[0]==='x'?'ew-resize':'ns-resize'):'pointer'};
+  cv.onpointerdown=e=>{if(!S.video)return;const[x,y,k]=pos(e);const h=S.lock?null:hit(x,y,k);
+    if(h){drag=h;cv.setPointerCapture(e.pointerId);return}
+    if(S.lock)return;
+    const c=S.xs.findIndex((v,i)=>i<S.xs.length-1&&x>=v&&x<S.xs[i+1]),r=S.ys.findIndex((v,i)=>i<S.ys.length-1&&y>=v&&y<S.ys[i+1]);
+    if(c<0||r<0)return;const p=r*(S.xs.length-1)+c;
+    if(S.sel.includes(p))S.sel=S.sel.filter(v=>v!==p);else{S.sel.push(p);S.sel.sort((a,b)=>a-b)}
+    defaultYaws();draw();renderViews();summary()};
+  cv.onpointerup=()=>{if(drag&&drag.moved)$$('#presets button').forEach(b=>b.classList.remove('on'));drag=null};
+  addEventListener('resize',draw);
+}
+function draw(){if(!cv||!S.video)return;const W=S.video.w,H=S.video.h;
+  const sc=Math.min(1,1600/W);cv.width=Math.round(W*sc);cv.height=Math.round(H*sc);
+  g.setTransform(sc,0,0,sc,0,0);g.direction='ltr';g.fillStyle='#000';g.fillRect(0,0,W,H);
+  if(S.img)g.drawImage(S.img,0,0,W,H);
+  const k=W/cv.getBoundingClientRect().width||1;
+  const C=S.xs.length-1;let idx=0;
+  for(let r=0;r<S.ys.length-1;r++)for(let c=0;c<C;c++,idx++){
+    const x0=S.xs[c],x1=S.xs[c+1],y0=S.ys[r],y1=S.ys[r+1],on=S.sel.includes(idx);
+    if(!on){g.fillStyle='rgba(5,8,12,.72)';g.fillRect(x0,y0,x1-x0,y1-y0)}
+    const vi=S.sel.indexOf(idx);
+    const fs=Math.max(13*k,Math.min(x1-x0,y1-y0)*.07),pad=fs*.6;
+    g.font=`700 ${fs}px Segoe UI,Tahoma,sans-serif`;
+    const lab=on?`${vi+1}`:'مستبعدة';const sub=on?(S.autoYaw?'تلقائي':(YAWS.find(y=>y[0]===S.yaws[idx])?.[1]||'').replace(/[\u2066\u2069]/g,'')):'';
+    const tw=Math.max(g.measureText(lab).width,sub?(g.font=`${fs*.62}px Segoe UI,Tahoma`,g.measureText(sub).width):0)+pad*2;
+    g.fillStyle=on?'rgba(46,211,198,.92)':'rgba(40,52,66,.9)';
+    const bh=sub?fs*2.1:fs*1.5;rr(x0+pad,y0+pad,tw,bh,fs*.35);g.fill();
+    g.fillStyle=on?'#04201d':'#c9d4df';g.textBaseline='top';g.textAlign='left';
+    g.font=`700 ${fs}px Segoe UI,Tahoma,sans-serif`;g.fillText(lab,x0+pad*2,y0+pad*1.3);
+    if(sub){g.font=`${fs*.62}px Segoe UI,Tahoma`;g.fillText(sub,x0+pad*2,y0+pad*1.3+fs*1.05)}
+  }
+  g.lineWidth=3*k;
+  S.xs.forEach((x,i)=>{const inner=i>0&&i<S.xs.length-1;g.strokeStyle=inner?'#2ed3c6':'rgba(46,211,198,.4)';g.setLineDash(inner?[]:[8*k,6*k]);g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke();
+    if(inner&&!S.lock){g.fillStyle='#2ed3c6';rr(x-5*k,H/2-18*k,10*k,36*k,5*k);g.fill()}});
+  S.ys.forEach((y,i)=>{const inner=i>0&&i<S.ys.length-1;g.strokeStyle=inner?'#2ed3c6':'rgba(46,211,198,.4)';g.setLineDash(inner?[]:[8*k,6*k]);g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke();
+    if(inner&&!S.lock){g.fillStyle='#2ed3c6';rr(W/2-18*k,y-5*k,36*k,10*k,5*k);g.fill()}});
+  g.setLineDash([]);
+}
+function rr(x,y,w,h,r){g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath()}
+function renderViews(){
+  $('#yawHint').textContent=S.autoYaw?'تُقدِّر الأداة اتجاه كل كاميرا بالمعايرة الذاتية، وتختبر الترتيبين تلقائياً.':'حدّد من أي جهة تصوّر كل لوحة الشخص (يساره = الكاميرا ترى جانبه الأيسر). الاتجاهات بداية فقط وتُصحَّح بالمعايرة.';
+  $('#views').innerHTML=S.sel.map((p,i)=>`<div class="view"><span class="badge">${i+1}</span><select data-p="${p}" ${S.autoYaw?'disabled':''}>
+    ${S.autoYaw?'<option>تلقائي</option>':YAWS.map(([v,l])=>`<option value="${v}" ${S.yaws[p]===v?'selected':''}>${l}</option>`).join('')}</select></div>`).join('')||'<div class="hint">لا توجد لوحات مختارة</div>';
+  $$('#views select').forEach(s=>s.onchange=()=>{S.yaws[+s.dataset.p]=+s.value;draw()});
+  draw();
+}
+function summary(){
+  const b=$('#startBtn'),n=S.sel.length;
+  if(!S.video){b.disabled=true;$('#sum').textContent='اختر فيديو للبدء';return}
+  b.disabled=n<2;
+  const mf=+$('#maxF').value||S.video.frames;
+  $('#sum').textContent=n<2?'اختر زاويتين على الأقل':`${n} زوايا · ${Math.min(mf,S.video.frames)} إطار · طول ${(+$('#hN').value).toFixed(2)} م${S.reuse?' · إعادة تصحيح (بدون كشف)':''}`;
+}
+async function start(){
+  const b=$('#startBtn');b.disabled=true;
+  const body={video:S.video.id,xs:S.xs,ys:S.ys,panels:S.sel,yaws:S.autoYaw?null:S.sel.map(p=>S.yaws[p]),
+    height:+$('#hN').value,mode:seg('#mode'),device:seg('#device'),max_frames:+$('#maxF').value||0,
+    fov:+$('#fovN').value,cutoff:+$('#cutN').value,reuse_from:S.reuse};
+  try{const r=await api('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});go('#job/'+r.id)}
+  catch(e){toast(e.message,1);b.disabled=false}
+}
+
+/* ----------------------------------------------------------- job view */
+const FILES={'motion.bvh':['BVH','حركة للشخصيات — Blender / Unity / Unreal / Mixamo'],'motion.json':['JSON','للعبة في Three.js'],'viewer.html':['HTML','العارض ثلاثي الأبعاد (يعمل دون إنترنت)'],
+  'report.html':['HTML','التقرير العلمي'],'report.json':['JSON','مقاييس الجودة'],'body_3d_xyz_m.csv':['CSV','المواقع ثلاثية الأبعاد لكل إطار'],'angles_com_contacts.csv':['CSV','الزوايا ومركز الثقل والتلامس'],
+  'body_3d_xyz_m.npy':['NPY','المواقع (NumPy)'],'body_3d_raw_xyz_m.npy':['NPY','المواقع الخام قبل التصحيح'],'body_3d_quality.npy':['NPY','جودة كل مفصل'],'center_of_mass_xyz_m.npy':['NPY','مركز الثقل'],
+  'virtual_cameras_calibration.toml':['TOML','معايرة متوافقة مع FreeMoCap'],'debug_2d_overlay.mp4':['MP4','الكشف ثنائي الأبعاد على الفيديو'],'detections_2d.npz':['NPZ','نتائج الكشف المحفوظة']};
+let lastLogLen=0,curTab='viewer';
+async function showJob(id){
+  let j;try{j=await api('/api/jobs/'+id)}catch(e){$('#main').innerHTML=`<div class="err">${esc(e.message)}</div>`;return}
+  const s=STATUS[j.status]||['','?'];const st=j.settings;
+  const head=`<div class="jhead"><div><h1>${esc(j.video_name)}</h1><div class="hint">${fmtT(j.created)} · ${st.panels.length} زوايا · ${st.yaws?'اتجاهات يدوية':'اتجاهات تلقائية'} · طول ${st.height} م${st.reuse_from?' · إعادة تصحيح':''}</div></div>
+    <span class="sp"></span><span class="status"><span class="dot ${s[0]}"></span>${s[1]}</span>
+    ${j.status==='running'?`<button class="btn danger" onclick="cancelJob('${id}')">إلغاء</button>`:
+      `${j.status==='done'?`<button class="btn" onclick="go('#rerun/${id}')">تعديل التصحيح وإعادة التشغيل</button>`:''}<button class="btn danger" onclick="delJob('${id}')">حذف</button>`}</div>`;
+  if(j.status==='running'){
+    const ci=STAGES.findIndex(x=>x[0]===j.stage);
+    $('#main').innerHTML=head+`<div class="card"><div style="display:flex;align-items:baseline;gap:14px"><span class="prog">${Math.round(j.progress*100)}%</span><span class="hint">${STAGES[ci]?.[1]||''}…</span></div>
+      <div class="bar" style="height:8px;margin-top:10px"><i style="width:${j.progress*100}%"></i></div>
+      <div class="stages">${STAGES.map((x,i)=>`<div class="st ${i<ci?'done':i===ci?'cur':''}">${i<ci?'✓':i===ci?'<span class="dot run"></span>':'○'} ${x[1]}</div>`).join('')}</div>
+      <div class="log" id="log">${esc(j.log.join('\n'))}</div>
+      <p class="hint" style="margin:10px 0 0">في أول تشغيل تُنزَّل نماذج الكشف (حوالي 200 MB). نتائج الكشف تُحفظ، فإعادة التصحيح لاحقاً تكون سريعة.</p></div>`;
+    const L=$('#log');L.scrollTop=L.scrollHeight;
+    pollT=setTimeout(()=>{if(location.hash==='#job/'+id){showJob(id);loadJobs()}},1000);return;
+  }
+  if(j.status!=='done'){
+    $('#main').innerHTML=head+(j.error?`<div class="err">${esc(j.error)}</div>`:'')+`<div class="card"><h2>السجل</h2><div class="log">${esc((j.log||[]).join('\n'))}</div>
+      <p class="hint" style="margin:10px 0 0">إذا لم تتضح المشكلة، انسخ السجل وأرسله.</p></div>`;return;
+  }
+  const m=j.summary||{},R=m.raw||{},T=m.triangulated||{},F=m.final||{};
+  const kp=(l,k,u,dec,desc)=>{const a=R[k],b=F[k];const red=a&&b!=null&&a>0?Math.round((1-b/a)*100):null;
+    return `<div class="kpi"><div class="l">${l}</div><div class="v ltr" style="text-align:right">${b==null?'—':(+b).toFixed(dec)} <span class="hint">${u}</span></div><div class="d">خام: ${a==null?'—':(+a).toFixed(dec)}${red!=null&&red>0?` · <b class="ltr">↓ ${red}%</b>`:''}</div><div class="d">${desc}</div></div>`};
+  const swaps=m.swaps?Object.values(m.swaps).flat().reduce((a,b)=>a+b,0):0;
+  $('#main').innerHTML=head+`<div class="kpis">
+     ${kp('تذبذب أطوال العظام','bone_length_cv_pct','%',3,'أقل = تشريح ثابت')}
+     ${kp('الارتعاش','mean_accel_m_s2','m/s²',2,'متوسط التسارع')}
+     ${kp('انزلاق القدم','foot_skate_m_s','m/s',3,'أثناء التلامس مع الأرض')}
+     ${kp('اختراق الأرض','ground_penetration_frames','إطار',0,'القدم تحت مستوى الأرض')}</div>
+   <div class="facts">
+     <span class="chip">${m.frames} إطار · ${m.views} زوايا · ${(+m.fps).toFixed(1)} fps</span>
+     <span class="chip">أخطاء AI مرفوضة: ${m.glitch??0} نقطة</span>
+     <span class="chip">زوايا غير متسقة: ${m.inconsistent??0} إطار</span>
+     <span class="chip">تبديل يمين/يسار مصحَّح: ${swaps}</span>
+     <span class="chip">عينات مُكمَلة: ${(+m.filled||0).toFixed(1)}%</span>
+     <span class="chip">زمن التصحيح: ${m.seconds}s</span></div>
+   <div class="tabs" id="tabs"><button data-t="viewer">العارض ثلاثي الأبعاد</button><button data-t="report">التقرير العلمي</button><button data-t="files">الملفات (${(j.files||[]).length})</button></div>
+   <div id="tab"></div>`;
+  const show=t=>{curTab=t;$$('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+    if(t==='viewer')$('#tab').innerHTML=`<iframe class="frame dark" src="/files/${id}/viewer.html"></iframe>`;
+    else if(t==='report')$('#tab').innerHTML=`<iframe class="frame" src="/files/${id}/report.html"></iframe>`;
+    else $('#tab').innerHTML=`<div class="files">${(j.files||[]).map(f=>{const d=FILES[f]||[f.split('.').pop().toUpperCase(),''];
+      return `<a class="file" href="/files/${id}/${f}?dl=1"><span class="ext">${d[0]}</span><div><div class="n">${esc(f)}</div><div class="s">${d[1]}</div></div></a>`}).join('')}</div>
+      <p class="hint">لتحويل BVH إلى FBX: <span class="ltr">blender -b -P blender_bvh_to_fbx.py -- motion.bvh motion.fbx</span></p>`};
+  $$('#tabs button').forEach(b=>b.onclick=()=>show(b.dataset.t));show(curTab);
+}
+async function cancelJob(id){await api(`/api/jobs/${id}/cancel`,{method:'POST'}).catch(e=>toast(e.message,1));toast('جارٍ الإلغاء…')}
+async function delJob(id){if(!confirm('حذف هذه المعالجة ونتائجها؟'))return;await api('/api/jobs/'+id,{method:'DELETE'}).catch(e=>toast(e.message,1));go('#new')}
+
+loadStatus();route();setInterval(()=>{if(jobsCache.some(j=>j.status==='running'))loadJobs()},3000);
+</script>
+</body>
+</html>
