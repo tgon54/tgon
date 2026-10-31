@@ -1,6 +1,7 @@
 """Export AI-MoCap motion as an Unreal-ready FBX animation.
 
-    python -m aimocap.unreal OUT_DIR [--target ue4|ue5|rig.fbx] [--root-motion] [--name Take]
+    python -m aimocap.unreal OUT_DIR [--target ue4|ue5|NAME|rig.fbx|all] [--root-motion]
+    python -m aimocap.unreal --list          # targets incl. the mannequins/ folder
 
 The FBX contains the target skeleton (exact UE bone names and rest transforms, no mesh)
 with one baked animation take. In Unreal: Import -> pick the FBX -> Skeleton =
@@ -212,6 +213,14 @@ def export_unreal(P_, fps, path, target='ue4', hands=None, contacts=None, root_m
     return res
 
 
+def target_tag(tid):
+    """File-name tag: UE4 / UE5 for bundled rigs, the sanitized name for mannequins/ files."""
+    if tid in ('ue4', 'ue5'):
+        return tid.upper()
+    stem = os.path.splitext(os.path.basename(tid))[0]
+    return ''.join(c if c.isalnum() or c in '-_' else '_' for c in stem)[:60] or 'custom'
+
+
 def load_motion(out_dir, prefer_clean=True):
     """Load an AI-MoCap output folder -> (P, fps, hands, contacts)."""
     mj = None
@@ -233,17 +242,27 @@ def load_motion(out_dir, prefer_clean=True):
 
 def main():
     ap = argparse.ArgumentParser(description='Export AI-MoCap output to an Unreal Engine FBX animation')
-    ap.add_argument('out_dir', help='AI-MoCap output folder (contains motion.json)')
-    ap.add_argument('--target', default='ue4', help="ue4 (Mannequin), ue5 (Manny) or a .fbx/.json skeleton")
+    ap.add_argument('out_dir', nargs='?', help='AI-MoCap output folder (contains motion.json)')
+    ap.add_argument('--target', default='ue4',
+                    help="ue4 (Mannequin), ue5 (Manny), a file name from mannequins/, a .fbx/.json path, or 'all'")
+    ap.add_argument('--list', action='store_true', help='list available targets and exit')
     ap.add_argument('--root-motion', action='store_true', help='move the root bone under the pelvis (UE root motion)')
     ap.add_argument('--output', help='FBX path (default OUT_DIR/motion_<target>.fbx)')
     ap.add_argument('--original', action='store_true', help='ignore motion_clean.json from the timeline cleaner')
     a = ap.parse_args()
+    from .rig import list_targets, MANNEQUIN_DIR
+    if a.list or not a.out_dir:
+        print('mannequins folder:', MANNEQUIN_DIR)
+        for t in list_targets():
+            print(f"  {t['id']:24s} {'OK ' if t['ok'] else 'BAD'} {t['bones']:3d} bones  {t['source']}"
+                  + (f"  ({t['error']})" if t['error'] else ''))
+        return
     P_, fps, hands, cont = load_motion(a.out_dir, prefer_clean=not a.original)
-    tag = a.target if a.target in ('ue4', 'ue5') else 'custom'
-    path = a.output or os.path.join(a.out_dir, f'motion_{tag.upper()}.fbx')
-    export_unreal(P_, fps, path, a.target, hands, cont, a.root_motion)
-    print('written', path)
+    targets = [t['id'] for t in list_targets() if t['ok']] if a.target == 'all' else [a.target]
+    for tid in targets:
+        path = a.output if a.output and len(targets) == 1 else os.path.join(a.out_dir, f'motion_{target_tag(tid)}.fbx')
+        export_unreal(P_, fps, path, tid, hands, cont, a.root_motion)
+        print('written', path)
 
 
 if __name__ == '__main__':

@@ -12,6 +12,10 @@ from . import fbx_io as F
 
 RIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rigs')
 BUNDLED = {'ue4': 'ue4_mannequin.json', 'ue5': 'ue5_manny.json'}
+# Drop-in folder: every .fbx / .json skeleton here becomes an export target named after the file.
+MANNEQUIN_DIR = os.environ.get('AIMOCAP_MANNEQUINS',
+                               os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'mannequins'))
+_CACHE = {}
 AXIS_KEYS = ('UpAxis', 'UpAxisSign', 'FrontAxis', 'FrontAxisSign', 'CoordAxis', 'CoordAxisSign',
              'OriginalUpAxis', 'OriginalUpAxisSign', 'UnitScaleFactor', 'OriginalUnitScaleFactor')
 
@@ -70,13 +74,51 @@ def rig_from_fbx(path):
                 axes={k: gs[k][0] for k in AXIS_KEYS if k in gs}, bones=bones)
 
 
+def _folder_files():
+    if not os.path.isdir(MANNEQUIN_DIR):
+        return {}
+    out = {}
+    for f in sorted(os.listdir(MANNEQUIN_DIR)):
+        stem, ext = os.path.splitext(f)
+        if ext.lower() in ('.fbx', '.json'):
+            out.setdefault(stem, os.path.join(MANNEQUIN_DIR, f))
+    return out
+
+
+def list_targets():
+    """Bundled UE4/UE5 rigs + every skeleton in the mannequins folder.
+    Returns [dict(id, label, source, ok, error, bones)]; `ok` = usable (has the UE bone names)."""
+    from .retarget import RigMap
+    out = []
+    for tid in BUNDLED:
+        r = load_rig(tid)
+        out.append(dict(id=tid, label=r.get('label', tid), source='bundled', ok=True, error=None, bones=len(r['bones'])))
+    for stem, path in _folder_files().items():
+        d = dict(id=stem, label=stem, source='mannequins/' + os.path.basename(path), ok=False, error=None, bones=0)
+        try:
+            r = load_rig(path)
+            d['bones'] = len(r['bones'])
+            RigMap(r)
+            d['ok'] = True
+        except Exception as e:
+            d['error'] = str(e)
+        out.append(d)
+    return out
+
+
 def load_rig(spec='ue4'):
-    """'ue4' | 'ue5' | path to .json rig | path to .fbx with the target skeleton."""
+    """'ue4' | 'ue5' | name of a file in the mannequins folder | path to a .json/.fbx skeleton."""
     if spec in BUNDLED:
         spec = os.path.join(RIG_DIR, BUNDLED[spec])
-    if spec.lower().endswith('.fbx'):
-        return rig_from_fbx(spec)
-    return json.load(open(spec, encoding='utf-8'))
+    elif not os.path.exists(spec):
+        files = _folder_files()
+        if spec not in files:
+            raise ValueError(f"unknown target '{spec}' (use ue4, ue5, a file in {MANNEQUIN_DIR} or a path)")
+        spec = files[spec]
+    key = (os.path.abspath(spec), os.path.getmtime(spec))
+    if key not in _CACHE:
+        _CACHE[key] = rig_from_fbx(spec) if spec.lower().endswith('.fbx') else json.load(open(spec, encoding='utf-8'))
+    return _CACHE[key]
 
 
 # ----------------------------------------------------------- transforms --

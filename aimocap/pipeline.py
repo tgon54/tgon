@@ -189,12 +189,18 @@ def export_all(res, out, log=print):
     json.dump(dict(data, raw=None), open(os.path.join(out, 'motion.json'), 'w'), separators=(',', ':'))
     write_viewer(dict(data, hands=None), os.path.join(out, 'viewer.html'))
     # Unreal Engine: animation baked on the UE4 Mannequin and UE5 Manny skeletons
-    from .unreal import export_unreal
-    for tgt in ('ue4', 'ue5'):
+    # (plus every usable skeleton dropped into the mannequins/ folder)
+    from .unreal import export_unreal, target_tag
+    from .rig import list_targets
+    for t in list_targets():
+        if not t['ok']:
+            log(f"  skipped {t['source']}: {t['error']}")
+            continue
         try:
-            export_unreal(P, fps, os.path.join(out, f'motion_{tgt.upper()}.fbx'), tgt, hands, res['contacts'], log=log)
+            export_unreal(P, fps, os.path.join(out, f"motion_{target_tag(t['id'])}.fbx"), t['id'], hands,
+                          res['contacts'], log=log)
         except Exception as e:
-            log(f'  Unreal {tgt} export failed: {type(e).__name__}: {e}')
+            log(f"  Unreal {t['id']} export failed: {type(e).__name__}: {e}")
     json.dump(res['report'], open(os.path.join(out, 'report.json'), 'w'), indent=2, default=float)
     write_report(res, os.path.join(out, 'report.html'))
     log('  exported: motion.bvh, motion.json, viewer.html, report.html, CSV/NPY, calibration TOML')

@@ -275,7 +275,7 @@ def save_clean(out_dir, edits, targets=('ue4',), root_motion=False, name=None, l
     """Apply edits to OUT_DIR/motion.json and write motion_clean.json/.bvh + Unreal FBX files."""
     from .bvh import write_bvh
     from .skeleton import NAMES, BONES
-    from .unreal import export_unreal
+    from .unreal import export_unreal, target_tag
     m = load(out_dir)
     c = apply_edits(m, edits)
     json.dump(dict(edits=edits), open(os.path.join(out_dir, 'clean_edits.json'), 'w'), indent=1)
@@ -286,7 +286,7 @@ def save_clean(out_dir, edits, targets=('ue4',), root_motion=False, name=None, l
     write_bvh(c['P'], c['fps'], os.path.join(out_dir, 'motion_clean.bvh'))
     base = ''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in (name or 'motion_clean'))[:60] or 'motion_clean'
     for t in targets:
-        fn = f'{base}_{t.upper()}.fbx'
+        fn = f'{base}_{target_tag(t)}.fbx'
         export_unreal(c['P'], c['fps'], os.path.join(out_dir, fn), t, c.get('hands'), c['contacts'],
                       root_motion=root_motion, take=base, log=log)
         files.append(fn)
@@ -299,7 +299,7 @@ def main():
     ap.add_argument('out_dir')
     ap.add_argument('--edits', help='JSON file with {"edits": [...]} (default: OUT_DIR/clean_edits.json)')
     ap.add_argument('--auto', type=float, default=None, help='add an auto_clean pass with this strength (0..1)')
-    ap.add_argument('--target', action='append', choices=['ue4', 'ue5'], help='repeatable; default ue4')
+    ap.add_argument('--target', action='append', help='ue4, ue5 or a mannequins/ name; repeatable; default ue4')
     ap.add_argument('--root-motion', action='store_true')
     a = ap.parse_args()
     edits = json.load(open(a.edits))['edits'] if a.edits else load_edits(a.out_dir)

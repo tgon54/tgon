@@ -50,6 +50,10 @@ python -m aimocap.unreal out --target ue4            # أو ue5 أو ملف FBX 
 python -m aimocap.unreal out --target ue4 --root-motion
 ```
 
+**مجلد المانيكانات `mannequins/`:** ضع فيه أي شخصية `.fbx` بأسماء عظام Unreal (Manny وQuinn وأجسام MetaHuman…)
+فتصبح هدفاً للتصدير بوضعيتها ونِسَبها: تُنتج المعالجة `motion_<اسم الملف>.fbx`، وتظهر في منظّف الخط الزمني،
+وفي سطر الأوامر `--target <اسم الملف>` أو `--target all` (والقائمة: `python -m aimocap.unreal --list`).
+
 ### منظّف الخط الزمني (Timeline Cleaner)
 
 شغّل `start_cleaner.bat` (أو افتح `http://127.0.0.1:8642/cleaner`). يعرض الحركة على خط زمني مع كشف تلقائي للمشاكل

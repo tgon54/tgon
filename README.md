@@ -34,6 +34,11 @@ bones following the hands/feet), so no Blender step and no retargeting is needed
 3. Optional `--root-motion`: the `root` bone follows the pelvis on the ground (enable *Root Motion* in the
    animation asset).
 
+**Mannequins folder:** drop more characters (`.fbx` with UE bone names: Manny, Quinn, MetaHuman bodies,
+your own UE-named rigs) into `mannequins/`. Each becomes an export target that uses its own rest pose and
+proportions: the pipeline writes `motion_<FileName>.fbx`, the cleaner lists it under *Export to Unreal*,
+and on the CLI use `--target <FileName>` or `--target all` (`python -m aimocap.unreal --list` shows them).
+
 The FBX writer is pure Python (`aimocap/fbx_io.py`); the bundled rigs in `aimocap/rigs/` contain only
 bone names and rest transforms. Any skeleton using UE naming can be targeted with `--target path/to/rig.fbx`.
 

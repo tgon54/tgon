@@ -249,7 +249,9 @@ def clean_preview(jid, body):
 
 def clean_export(jid, body):
     from .timeline import save_clean
-    targets = [t for t in body.get('targets', ['ue4']) if t in ('ue4', 'ue5')] or ['ue4']
+    from .rig import list_targets
+    ok = {t['id'] for t in list_targets() if t['ok']}
+    targets = [t for t in body.get('targets', ['ue4']) if t in ok] or ['ue4']
     log = []
     files, c = save_clean(_out(jid), body.get('edits', []), targets, bool(body.get('root_motion')),
                           body.get('name') or None, log=log.append)
@@ -326,6 +328,9 @@ class H(BaseHTTPRequestHandler):
             m = re.match(r'^/api/jobs/([\w-]+)/motion$', p)
             if m:
                 return self._send(200, job_motion(m.group(1)))
+            if p == '/api/targets':
+                from .rig import list_targets, MANNEQUIN_DIR
+                return self._send(200, dict(folder=MANNEQUIN_DIR, targets=list_targets()))
             if p == '/api/status':
                 return self._send(200, dict(workspace=WS, running=list(RUNNING), gpu=_gpu()))
             if p == '/api/videos':

@@ -79,7 +79,8 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:6px 10px
       <div class="card"><h3>Edits</h3><div class="list" id="edits"></div></div>
       <div class="card"><h3>Export to Unreal</h3>
         <div class="row"><label>Name</label><input type="text" id="expName" value="motion_clean" style="flex:1"></div>
-        <div class="row"><label><input type="checkbox" id="tUE4" checked> UE4 Mannequin</label><label><input type="checkbox" id="tUE5"> UE5 Manny</label></div>
+        <div id="targets"></div>
+        <div class="row"><button class="btn sm" id="reloadT" title="Re-scan the mannequins folder">↻ Rescan mannequins folder</button></div>
         <div class="row"><label><input type="checkbox" id="rootMotion"> Root motion (root bone follows pelvis)</label></div>
         <div class="row"><button class="btn pri" id="expBtn">Export FBX</button></div>
         <div id="expOut" class="files"></div>
@@ -204,7 +205,7 @@ $('#fixAll').onclick=()=>{const L=curIssues().filter(s=>s.type==='spike');if(!L.
 
 // ------------------------------------------------------------------ export
 $('#expBtn').onclick=async()=>{
-  const targets=[$('#tUE4').checked&&'ue4',$('#tUE5').checked&&'ue5'].filter(Boolean);if(!targets.length)return toast('Pick UE4 and/or UE5');
+  const targets=$$('#targets input:checked').map(i=>i.value);if(!targets.length)return toast('Pick at least one mannequin');
   $('#expBtn').disabled=true;$('#expOut').innerHTML='<span class="hint">Exporting…</span>';
   try{const r=await post(`/api/jobs/${S.id}/export`,{edits:S.edits,targets,root_motion:$('#rootMotion').checked,name:$('#expName').value});
     $('#expOut').innerHTML=`<p class="hint">${r.frames} frames exported:</p>`+r.files.map(f=>`<a href="/files/${S.id}/${f}?dl=1">⬇ ${f}</a>`).join('');toast('Export done')}
@@ -317,6 +318,13 @@ document.onkeydown=e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT
   else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();$('#undo').onclick()}
   else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();$('#redo').onclick()}};
 window.onresize=()=>{drawTL();draw3d()};
+async function loadTargets(){
+  const keep=new Set($$('#targets input:checked').map(i=>i.value));
+  try{const r=await api('/api/targets');
+    $('#targets').innerHTML=r.targets.map(t=>`<div class="row"><label title="${esc(t.error||t.source)}" style="${t.ok?'':'opacity:.5'}"><input type="checkbox" value="${esc(t.id)}" ${!t.ok?'disabled':(keep.size?keep.has(t.id):t.id==='ue4')?'checked':''}> ${esc(t.label)} <span class="hint">${t.source==='bundled'?'':esc(t.source)}${t.ok?'':' — '+esc(t.error)}</span></label></div>`).join('')
+      +`<div class="hint">Drop more skeletons (.fbx, UE bone names) into <span style="word-break:break-all">${esc(r.folder)}</span></div>`}
+  catch(e){toast(e.message)}}
+$('#reloadT').onclick=loadTargets;loadTargets();
 if(location.hash.length>1)load(location.hash.slice(1));else openPicker();
 </script>
 </body>

@@ -3,3 +3,7 @@ __pycache__/
 aimocap_workspace/
 .hoplite/
 *.fbx.tmp
+
+# Epic/third-party characters: keep local, do not publish
+mannequins/*.fbx
+mannequins/*.FBX
