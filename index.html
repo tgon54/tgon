@@ -35,19 +35,22 @@ canvas{display:block;position:fixed;inset:0;z-index:0;touch-action:none}
 <label>الحجم <select id="sz"><option value="80">صغير</option><option value="120" selected>كبير</option><option value="160">ضخم</option></select></label>
 <label><input id="wl" type="checkbox" checked> السور</label>
 <label><input id="pp" type="checkbox" checked> درابزين</label>
-<label><input id="lt" type="checkbox" checked> حدود القطع</label>
+<label><input id="bd" type="checkbox" checked> المباني</label>
+<label><input id="lt" type="checkbox"> حدود القطع</label>
 <button id="tr">🚶 جولة</button>
 <button id="ro">⟳ دوران</button>
 <button data-v="a">🏙️ عام</button><button data-v="t">⬇️ علوي</button><button data-v="p">🏛️ الساحة</button><button data-v="h">⛰️ القمة</button>
 <button id="ex">⬇️ JSON</button>
+<label>تصدير <select id="xs"><option value="all">المشهد كاملًا</option><option value="b">المباني فقط</option></select></label><button id="xg">⬇️ GLB (Unreal)</button>
 <div id="st"></div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
 <script>
 'use strict';
 // ======================= parameters & constants =======================
-const P={seed:1954,dens:.6,slope:.24,loops:.3,branch:.6,S:120,wall:true,parapet:true,lots:true};
+const P={seed:1954,dens:.6,slope:.24,loops:.3,branch:.6,S:120,wall:true,parapet:true,lots:false,bld:true};
 const RISE=.16,GMAX=.5,GRAMP=.07,STEP=.17;          // riser target, max stair grade, ramp→stair threshold, door step
 // street hierarchy: width, A* clearance (room for two lot depths between parallel streets), grade weights
 const CLS=[{n:'شارع',w:3.6,v:.1,clr:9,kG:3,kS:.35},{n:'زقاق',w:2.4,v:.16,clr:8,kG:2.5,kS:.25},{n:'درب',w:1.6,v:.18,clr:6,kG:1.6,kS:.1}];
@@ -153,15 +156,42 @@ const TX=(()=>{
  const terr=make(512,(u,v,o)=>{const g=fbm(u,v,6,101,4),w2=fbm(u,v,40,102);vor(u,v,60,103,.9);
   const soil=[.55,.46,.34],dry=[.62,.6,.4],grn=[.36,.45,.24];const k=sstep(.42,.62,g);o.r=lerp(soil[0],dry[0],k);o.g=lerp(soil[1],dry[1],k);o.b=lerp(soil[2],dry[2],k);
   if(ihash(FID,1,103)<.3&&F1<.3)mix3(o,grn,.7);const t=.88+.24*w2;o.r*=t;o.g*=t;o.b*=t;o.h=g*.5+w2*.3;o.ro=.97},1);
- return{cobble,flag,tread,riser,gutter,rubble,fill,plaster,terr}})();
+ // جير: whitewash over lime render — trowel waves, chipped top coats showing ochre under-layers, hairline cracks (tile 2.5 m)
+ const limeFn=(u,v,o,k=0)=>{const w=fbm(u,v,4,111,4),w2=fbm(u,v,32,112,2),ch=fbm(u,v,5,114,4),cz=fbm(u,v,2,115,2);
+  const c=.925+.05*(w-.5)+.03*(w2-.5);o.r=c;o.g=c*.978;o.b=c*.935;
+  const z=sstep(.4,.55,cz+k*.3),chip=sstep(.6-k*.12,.63-k*.12,ch)*z,rim=sstep(.55-k*.12,.6-k*.12,ch)*(1-chip)*z;
+  mix3(o,[.8*(.88+.24*w2),.72*(.88+.24*w2),.6*(.88+.24*w2)],chip);o.r-=rim*.05;o.g-=rim*.06;o.b-=rim*.08;o.h=w*.35+w2*.12-chip*.3;
+  if(Math.abs(fbm(u,v,7,116,4)-.5)<.005&&cz>.45){o.r*=.8;o.g*=.8;o.b*=.78;o.h-=.12}o.ro=.92};
+ const lime=make(1024,limeFn,1.6);
+ // plinth band (1.4 m, not tiled vertically): rising damp, splash grime and a tide line
+ const limeBase=make(512,(u,v,o)=>{const hf=1-v;limeFn(u,v*.56,o,1-hf);const g=Math.pow(1-hf,1.7)*(.55+.6*fbm(u,v,6,117,3)),tide=sstep(.04,0,Math.abs(hf-(.42+.12*(fbm(u,0,3,118,2)-.5))))*.5;
+  mix3(o,[.6,.5,.37],clamp(g,0,.85));mix3(o,[.66,.58,.46],tide);o.h-=g*.1;o.ro=.93},1.6);
+ limeBase.a.wrapT=limeBase.n.wrapT=limeBase.r.wrapT=THREE.ClampToEdgeWrapping;
+ // weathered mauve-brown door planks with nail rows
+ const wood=make(512,(u,v,o)=>{const x=u*5,id=Math.floor(x),f=x-id,t=.8+.35*ihash(id,3,121),w=fbm(u,v,3,122,3),gr=.5+.5*Math.sin(2*Math.PI*(u*60+w*3+ihash(id,1,121)*7)),wt=sstep(.45,.75,fbm(u,v,4,123,4)),k=.85+.15*gr;
+  o.r=.44*t*k;o.g=.31*t*k;o.b=.29*t*k;mix3(o,[.56,.52,.49],wt*.6);o.h=gr*.25+w*.2;o.ro=.82;
+  if(Math.min(f,1-f)<.03){o.r*=.35;o.g*=.35;o.b*=.35;o.h=0}
+  for(const ny of[.12,.5,.88]){const d=Math.hypot((f-.5)/5,v-ny);if(d<.012){mix3(o,[.15,.13,.12],1);o.h=.6+.4*(1-d/.012);o.ro=.45}}},1.4);
+ // glazed green barrel tiles (qermoud)
+ const tile=make(512,(u,v,o)=>{const x=u*8,y=v*8,ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy,prof=Math.sin(Math.PI*fx),q=ihash(iy*8+ix,1,131),gz=.75+.3*prof;
+  const b=q<.15?[.38,.52,.4]:[.13,.4,.26];o.r=b[0]*gz;o.g=b[1]*gz;o.b=b[2]*gz;const d=1-.45*sstep(.75,1,fy);o.r*=d;o.g*=d;o.b*=d;
+  const gv=sstep(.12,0,prof);mix3(o,[.32,.28,.22],gv*.8);o.h=prof*.7+fy*.25;o.ro=lerp(.3,.85,gv)+.2*fbm(u,v,8,132,3)},2.2);
+ const marble=make(512,(u,v,o)=>{const w=fbm(u,v,3,141,5),vein=sstep(.025,0,Math.abs(fbm(u,v,2,142,5)-.5)),c=.9+.06*w;o.r=c;o.g=c*.985;o.b=c*.96;mix3(o,[.6,.6,.6],vein*.6);o.h=w*.1;o.ro=.42},.4);
+ return{cobble,flag,tread,riser,gutter,rubble,fill,plaster,terr,lime,limeBase,wood,tile,marble}})();
 const DS2=THREE.DoubleSide;
 const po=k=>({polygonOffset:true,polygonOffsetFactor:-k,polygonOffsetUnits:-k*2});
-const M=(s,ns,o={})=>new THREE.MeshStandardMaterial(Object.assign({map:s.a,normalMap:s.n,roughnessMap:s.r,roughness:1,metalness:0,vertexColors:true,side:DS2,normalScale:new THREE.Vector2(ns,ns)},o));
+const M=(s,ns,o={})=>new THREE.MeshStandardMaterial(Object.assign({map:s.a,normalMap:s.n,roughnessMap:s.r,metalnessMap:s.r,roughness:1,metalness:0,vertexColors:true,side:DS2,normalScale:new THREE.Vector2(ns,ns)},o));
 const MAT={ramp:[M(TX.flag,1.1,po(3)),M(TX.cobble,1.5,po(2)),M(TX.cobble,1.5,po(1))],tread:[M(TX.tread,1.1,po(3)),M(TX.tread,1.1,po(2)),M(TX.tread,1.1,po(1))],
  gut:[M(TX.gutter,1,po(3)),M(TX.gutter,1,po(2)),M(TX.gutter,1,po(1))],disc:[M(TX.flag,1.1,po(4)),M(TX.cobble,1.5,po(4)),M(TX.cobble,1.5,po(4))],
  riser:M(TX.riser,1.1),skirt:M(TX.rubble,1.5),parapet:M(TX.plaster,.6),pad:M(TX.fill,1.3),lotwall:M(TX.rubble,1.5),coping:M(TX.riser,1),terr:M(TX.terr,1),rampart:M(TX.rubble,1.7)};
 const MSEA=new THREE.MeshStandardMaterial({color:0x2c6a86,roughness:.18,metalness:.05,normalMap:TX.plaster.n,normalScale:new THREE.Vector2(.25,.25)});
 MSEA.normalMap=TX.plaster.n.clone();MSEA.normalMap.repeat.set(60,60);MSEA.normalMap.needsUpdate=true;
+
+const FS={side:THREE.FrontSide};
+const HM={lime:M(TX.lime,1.1,FS),base:M(TX.limeBase,1.1,FS),roof:M(TX.lime,.9,Object.assign({color:0xe6e1d8},FS)),wood:M(TX.wood,1.4,FS),tile:M(TX.tile,1.6,FS),marble:M(TX.marble,.5,FS),floor:M(TX.flag,1.1,FS),
+ iron:new THREE.MeshStandardMaterial({color:0x2b2623,metalness:.6,roughness:.55}),void:new THREE.MeshStandardMaterial({color:0x100d0b,roughness:.95})};
+Object.entries(HM).forEach(([k,m])=>m.name='M_House_'+k[0].toUpperCase()+k.slice(1));
+Object.entries(MAT).forEach(([k,v])=>[].concat(v).forEach((m,i)=>m.name=`M_${k[0].toUpperCase()+k.slice(1)}${Array.isArray(v)?'_'+i:''}`));MSEA.name='M_Sea';
 
 // ======================= geometry builder =======================
 class GB{constructor(){this.P=[];this.U=[];this.C=[]}
@@ -456,6 +486,172 @@ function buildLots(){const pad=new GB,wall=new GB,cop=new GB,lp=[];
  const cone=new THREE.ConeGeometry(.22,.6,10);cone.rotateX(Math.PI/2);
  for(const L of lots){if(!L.buildable)continue;const s=L.seed,m=new THREE.Mesh(cone,dm);m.position.set(s.x,Math.max(L.pad,s.dy)+.45,s.z);m.lookAt(s.x+s.dir[0],m.position.y,s.z+s.dir[1]);lotLines.add(m)}
  lotLines.visible=P.lots;group.add(lotLines)}
+// ======================= procedural Casbah houses (dar) =======================
+// one indexed mesh per house, one material slot per finish, pivot at the pad centroid → clean static meshes for Unreal
+const BSC={lime:2.5,roof:2.5,base:2.5,wood:1,tile:1.2,marble:.8,floor:2.4,iron:1,void:1};
+class BB{constructor(){this.g={}}
+ b(k){return this.g[k]||(this.g[k]={p:[],n:[],u:[],c:[],i:[]})}
+ auv(k,p,N){const s=BSC[k]||1;if(Math.abs(N[1])>.7)return[p[0]/s,p[2]/s];const l=Math.hypot(N[0],N[2])||1;return[(-p[0]*N[2]+p[2]*N[0])/l/s,p[1]/s]}
+ poly(k,P,N,U,C){const b=this.b(k),o=b.p.length/3;let nx=0,ny=0,nz=0;
+  for(let j=0;j<P.length;j++){const a=P[j],c=P[(j+1)%P.length];nx+=(a[1]-c[1])*(a[2]+c[2]);ny+=(a[2]-c[2])*(a[0]+c[0]);nz+=(a[0]-c[0])*(a[1]+c[1])}
+  const flip=nx*N[0]+ny*N[1]+nz*N[2]<0,cc=C||[1,1,1];
+  for(let j=0;j<P.length;j++){const p=P[j],uv=U?U[j]:this.auv(k,p,N),c=Array.isArray(cc[0])?cc[j]:cc;b.p.push(p[0],p[1],p[2]);b.n.push(N[0],N[1],N[2]);b.u.push(uv[0],uv[1]);b.c.push(c[0],c[1],c[2])}
+  for(let j=1;j<P.length-1;j++)flip?b.i.push(o,o+j+1,o+j):b.i.push(o,o+j,o+j+1)}
+ box(k,F,s0,s1,y0,y1,d0,d1,C,skip=''){const q=(s,y,d)=>pt(F,s,y,d),n=[F.nx,0,F.nz],t=[F.tx,0,F.tz];
+  this.poly(k,[q(s0,y0,d1),q(s1,y0,d1),q(s1,y1,d1),q(s0,y1,d1)],n,null,C);
+  if(!skip.includes('b'))this.poly(k,[q(s0,y0,d0),q(s1,y0,d0),q(s1,y1,d0),q(s0,y1,d0)],[-n[0],0,-n[2]],null,C);
+  this.poly(k,[q(s0,y0,d0),q(s0,y0,d1),q(s0,y1,d1),q(s0,y1,d0)],[-t[0],0,-t[2]],null,C);
+  this.poly(k,[q(s1,y0,d0),q(s1,y0,d1),q(s1,y1,d1),q(s1,y1,d0)],t,null,C);
+  if(!skip.includes('t'))this.poly(k,[q(s0,y1,d0),q(s1,y1,d0),q(s1,y1,d1),q(s0,y1,d1)],[0,1,0],null,C);
+  if(!skip.includes('u'))this.poly(k,[q(s0,y0,d0),q(s1,y0,d0),q(s1,y0,d1),q(s0,y0,d1)],[0,-1,0],null,C)}
+ prism(k,A,Bp,r,sides,C){const d=[Bp[0]-A[0],Bp[1]-A[1],Bp[2]-A[2]],L=Math.hypot(...d);if(L<1e-4)return;d[0]/=L;d[1]/=L;d[2]/=L;
+  let u=Math.abs(d[1])>.9?[1,0,0]:[d[2],0,-d[0]];const ul=Math.hypot(...u);u=u.map(x=>x/ul);const w=[d[1]*u[2]-d[2]*u[1],d[2]*u[0]-d[0]*u[2],d[0]*u[1]-d[1]*u[0]];
+  const ring=(P,a)=>[P[0]+(u[0]*Math.cos(a)+w[0]*Math.sin(a))*r,P[1]+(u[1]*Math.cos(a)+w[1]*Math.sin(a))*r,P[2]+(u[2]*Math.cos(a)+w[2]*Math.sin(a))*r];
+  for(let j=0;j<sides;j++){const a0=j/sides*6.2832,a1=(j+1)/sides*6.2832,am=(a0+a1)/2,N=[u[0]*Math.cos(am)+w[0]*Math.sin(am),u[1]*Math.cos(am)+w[1]*Math.sin(am),u[2]*Math.cos(am)+w[2]*Math.sin(am)];
+   this.poly(k,[ring(A,a0),ring(A,a1),ring(Bp,a1),ring(Bp,a0)],N,[[j/sides,0],[(j+1)/sides,0],[(j+1)/sides,L],[j/sides,L]],C)}
+  const cap=[];for(let j=0;j<sides;j++)cap.push(ring(Bp,j/sides*6.2832));this.poly(k,cap,d,cap.map((_,j)=>[.5+.5*Math.cos(j/sides*6.2832)*r*4,.5+.5*Math.sin(j/sides*6.2832)*r*4]),C)}
+ geo(k,g,m,uvFn,C){const G=g.index?g.toNonIndexed():g,P=G.attributes.position,Nn=G.attributes.normal,Uv=G.attributes.uv,b=this.b(k),o=b.p.length/3,v=new THREE.Vector3(),nm=new THREE.Matrix3().getNormalMatrix(m),s=BSC[k]||1,c=C||[1,1,1];
+  for(let j=0;j<P.count;j++){v.fromBufferAttribute(P,j);const uv=uvFn?uvFn(v.x,v.y,v.z):[Uv.getX(j)/s,Uv.getY(j)/s];v.applyMatrix4(m);b.p.push(v.x,v.y,v.z);
+   v.fromBufferAttribute(Nn,j).applyMatrix3(nm).normalize();b.n.push(v.x,v.y,v.z);b.u.push(uv[0],uv[1]);b.c.push(c[0],c[1],c[2]);b.i.push(o+j)}
+  g.dispose();if(G!==g)G.dispose()}
+ mesh(name,org){const keys=Object.keys(this.g).filter(k=>this.g[k].i.length);let nv=0;keys.forEach(k=>nv+=this.g[k].p.length/3);
+  const P=new Float32Array(nv*3),N=new Float32Array(nv*3),U=new Float32Array(nv*2),Cc=new Float32Array(nv*3),I=[],g=new THREE.BufferGeometry();let vo=0;
+  keys.forEach((k,mi)=>{const b=this.g[k],st=I.length;for(let j=0;j<b.p.length;j+=3){P[vo*3+j]=b.p[j]-org[0];P[vo*3+j+1]=b.p[j+1]-org[1];P[vo*3+j+2]=b.p[j+2]-org[2]}
+   N.set(b.n,vo*3);U.set(b.u,vo*2);Cc.set(b.c,vo*3);for(const i of b.i)I.push(i+vo);g.addGroup(st,b.i.length,mi);vo+=b.p.length/3});
+  g.setAttribute('position',new THREE.BufferAttribute(P,3));g.setAttribute('normal',new THREE.BufferAttribute(N,3));g.setAttribute('uv',new THREE.BufferAttribute(U,2));g.setAttribute('color',new THREE.BufferAttribute(Cc,3));
+  g.setIndex(nv>65535?new THREE.Uint32BufferAttribute(I,1):new THREE.Uint16BufferAttribute(I,1));g.computeBoundingSphere();
+  const m=new THREE.Mesh(g,keys.map(k=>HM[k]));m.name=name;m.position.set(org[0],org[1],org[2]);m.castShadow=m.receiveShadow=true;return m}}
+const pt=(F,s,y,d)=>[F.ox+F.tx*s+F.nx*d,y,F.oz+F.tz*s+F.nz*d];
+// frame basis (-t,up,n) is right-handed because n=(tz,-tx)
+const mtx=(F,s,y,d)=>new THREE.Matrix4().makeBasis(new THREE.Vector3(-F.tx,0,-F.tz),new THREE.Vector3(0,1,0),new THREE.Vector3(F.nx,0,F.nz)).setPosition(F.ox+F.tx*s+F.nx*d,y,F.oz+F.tz*s+F.nz*d);
+const mkF=(cx,cz,nx,nz,len)=>({ox:cx+nz*len/2,oz:cz-nx*len/2,tx:-nz,tz:nx,nx,nz,l:len,busy:[]});
+const free=(F,s0,s1,y0,y1)=>!F.busy.some(b=>s0<b.s1&&s1>b.s0&&y0<b.y1&&y1>b.y0);
+// horseshoe arch outline (Algiers doors and galleries), apex at hh
+function archPts(w,hh,hb=.22,seg=14){const r=w/2,R=r/Math.cos(hb),cy=hh-R,pts=[new THREE.Vector2(-r,0),new THREE.Vector2(r,0)];
+ for(let i=0;i<=seg;i++){const a=-hb+(Math.PI+2*hb)*i/seg;pts.push(new THREE.Vector2(R*Math.cos(a),cy+R*Math.sin(a)))}return pts}
+function archOpening(B,F,s,y,d,w,hh,k,frameK,C){B.geo(k,new THREE.ShapeGeometry(new THREE.Shape(archPts(w,hh)),12),mtx(F,s,y,d+.006),k==='wood'?(x,yy)=>[(x+w/2)/w,yy/hh]:null,k==='wood'?null:C);
+ if(frameK){const sh=new THREE.Shape(archPts(w+.26,hh+.13));sh.holes.push(new THREE.Path(archPts(w,hh)));B.geo(frameK,new THREE.ExtrudeGeometry(sh,{depth:.06,bevelEnabled:false,curveSegments:12}),mtx(F,s,y-.001,d),null,C)}}
+function houseDoor(B,F,s,y,w,hh,noble,C){
+ B.geo('wood',new THREE.ShapeGeometry(new THREE.Shape(archPts(w,hh)),12),mtx(F,s,y,.012),(x,yy)=>[(x+w/2)/w,yy/hh]);
+ if(noble){const W=w+.62,Hh=hh+.34,V2=THREE.Vector2,sh=new THREE.Shape([new V2(-W/2,0),new V2(W/2,0),new V2(W/2,Hh),new V2(-W/2,Hh)]);sh.holes.push(new THREE.Path(archPts(w,hh)));
+  B.geo('marble',new THREE.ExtrudeGeometry(sh,{depth:.12,bevelEnabled:false,curveSegments:12}),mtx(F,s,y,0));
+  for(const sx of[-1,1])B.prism('marble',pt(F,s+sx*(w/2+.11),y+.05,.17),pt(F,s+sx*(w/2+.11),y+hh-w/2-.05,.17),.05,8);
+  B.box('marble',F,s-W/2-.03,s+W/2+.03,y+Hh,y+Hh+.08,0,.16,null,'b')}
+ else{const sh=new THREE.Shape(archPts(w+.3,hh+.15));sh.holes.push(new THREE.Path(archPts(w,hh)));B.geo('lime',new THREE.ExtrudeGeometry(sh,{depth:.07,bevelEnabled:false,curveSegments:12}),mtx(F,s,y,0),null,C)}
+ B.box('marble',F,s-w/2-.14,s+w/2+.14,y-.2,y+.03,0,.28,null,'b');
+ B.prism('iron',pt(F,s+w*.22,y+1.05,.02),pt(F,s+w*.22,y+1.05,.05),.03,6)}
+function tileAwning(B,F,s,y,w){const s0=s-w/2,s1=s+w/2,ad=.62,dr=.34,N=[F.nx*dr,ad,F.nz*dr],nl=Math.hypot(...N),Nn=N.map(x=>x/nl),sl=Math.hypot(ad,dr);
+ B.poly('tile',[pt(F,s0,y,0),pt(F,s1,y,0),pt(F,s1,y-dr,ad),pt(F,s0,y-dr,ad)],Nn,[[s0/1.2,0],[s1/1.2,0],[s1/1.2,sl/1.2],[s0/1.2,sl/1.2]]);
+ B.poly('wood',[pt(F,s0,y-.05,0),pt(F,s1,y-.05,0),pt(F,s1,y-dr-.05,ad),pt(F,s0,y-dr-.05,ad)],Nn.map(x=>-x),[[0,0],[w,0],[w,1],[0,1]]);
+ B.box('tile',F,s0,s1,y-dr-.07,y-dr+.01,ad-.03,ad+.03);
+ for(const f of[.08,.5,.92]){const q=lerp(s0,s1,f);B.prism('wood',pt(F,q,y-.62,0),pt(F,q,y-dr-.05,ad-.06),.035,6)}
+ B.box('wood',F,s0-.05,s1+.05,y-.06,y+.05,0,.07,null,'b')}
+function grille(B,F,c,y,w,hh,d,C){const N=[F.nx,0,F.nz],fw=.09;
+ B.poly('void',[pt(F,c-w/2,y,d+.004),pt(F,c+w/2,y,d+.004),pt(F,c+w/2,y+hh,d+.004),pt(F,c-w/2,y+hh,d+.004)],N);
+ B.box('lime',F,c-w/2-fw,c-w/2,y,y+hh+fw,d,d+.07,C,'b');B.box('lime',F,c+w/2,c+w/2+fw,y,y+hh+fw,d,d+.07,C,'b');B.box('lime',F,c-w/2,c+w/2,y+hh,y+hh+fw,d,d+.07,C,'b');
+ B.box('marble',F,c-w/2-.14,c+w/2+.14,y-.08,y,d,d+.15,null,'b');
+ const nb=Math.max(3,Math.round(w/.13));for(let k=1;k<nb;k++){const s=c-w/2+w*k/nb;B.prism('iron',pt(F,s,y,d+.12),pt(F,s,y+hh,d+.12),.012,4)}
+ for(const f of[.04,.35,.65,.96])B.prism('iron',pt(F,c-w/2,y+hh*f,d+.12),pt(F,c+w/2,y+hh*f,d+.12),.012,4);
+ for(const s of[c-w/2+.02,c+w/2-.02])for(const yy of[y+hh*.04,y+hh*.96])B.prism('iron',pt(F,s,yy,d+.004),pt(F,s,yy,d+.12),.012,4)}
+function slits(B,F,c,y,n,d,C,w=.13,hh=.44){const N=[F.nx,0,F.nz];for(let k=0;k<n;k++){const s=c+(k-(n-1)/2)*.34;
+ B.poly('void',[pt(F,s-w/2,y,d+.004),pt(F,s+w/2,y,d+.004),pt(F,s+w/2,y+hh,d+.004),pt(F,s-w/2,y+hh,d+.004)],N);
+ B.box('lime',F,s-w/2-.05,s-w/2,y,y+hh+.05,d,d+.035,C,'b');B.box('lime',F,s+w/2,s+w/2+.05,y,y+hh+.05,d,d+.035,C,'b');
+ B.box('lime',F,s-w/2,s+w/2,y+hh,y+hh+.05,d,d+.035,C,'b');B.box('lime',F,s-w/2-.05,s+w/2+.05,y-.05,y,d,d+.05,C,'b')}}
+function shopDoor(B,F,s0,y,C){const w=1.6,hh=2.3,N=[F.nx,0,F.nz];
+ for(const [a,b] of[[s0,s0+w/2],[s0+w/2,s0+w]]){B.poly('wood',[pt(F,a,y,.012),pt(F,b,y,.012),pt(F,b,y+hh,.012),pt(F,a,y+hh,.012)],N,[[0,0],[1,0],[1,1],[0,1]]);
+  for(const yy of[y+.35,y+1.9])B.box('iron',F,a+.03,b-.03,yy,yy+.045,.012,.03,null,'b')}
+ B.box('lime',F,s0-.14,s0,y,y+hh,0,.09,C,'b');B.box('lime',F,s0+w,s0+w+.14,y,y+hh,0,.09,C,'b');
+ B.box('wood',F,s0-.2,s0+w+.2,y+hh,y+hh+.17,0,.13,null,'b');B.box('marble',F,s0-.1,s0+w+.1,y-.2,y+.03,0,.22,null,'b')}
+function dress(B,F,s0,s1,fys,h,d,C){for(const yb of fys){let s=s0+.1;while(true){const w=1.25+.55*h(),c=s+w/2;if(c+.55>s1-.05)break;const r=h();
+  if(r<.32&&free(F,c-.6,c+.6,yb+.6,yb+2.05)){grille(B,F,c,yb+.85,.62+.2*h(),.85+.2*h(),d,C);F.busy.push({s0:c-.6,s1:c+.6,y0:yb+.6,y1:yb+2.05})}
+  else if(r<.62&&free(F,c-.6,c+.6,yb+1.3,yb+2)){slits(B,F,c,yb+1.45,r<.5?3:2,d,C);F.busy.push({s0:c-.6,s1:c+.6,y0:yb+1.3,y1:yb+2})}
+  else if(r<.72&&free(F,c-.3,c+.3,yb+1.5,yb+2)){slits(B,F,c,yb+1.6,1,d,C,.3,.3)}
+  s+=w}}}
+let bldGroup=null;
+function buildHouses(){bldGroup=new THREE.Group();bldGroup.name='Buildings';group.add(bldGroup);const corb=[];let nb=0,fl=0;
+ for(const L of lots){L.house=null;if(!L.buildable)continue;try{const m=makeHouse(L,corb);if(m){bldGroup.add(m);nb++;fl+=L.house.floors}}catch(err){console.warn('house',L.id,err)}}
+ bldGroup.visible=P.bld;stats.houses=nb;stats.floors=fl}
+function makeHouse(L,corb){const h=mul(P.seed*7919+L.id*104729+17),B=new BB,pad=L.pad,nrm2=(a,b)=>{const dx=b[0]-a[0],dz=b[1]-a[1],l=Math.hypot(dx,dz)||1;return[dz/l,-dx/l]};
+ // footprint: simplified lot outline, CCW in (x,z) so the outward normal of a→b is (dz,-dx)
+ let p=L.poly.map(q=>[q[0],q[1]]),fi=0,fd=0;p.forEach((q,i)=>{const d=Math.hypot(q[0]-p[0][0],q[1]-p[0][1]);if(d>fd){fd=d;fi=i}});
+ p=dp(p.slice(0,fi+1),.06).slice(0,-1).concat(dp(p.slice(fi).concat([p[0]]),.06).slice(0,-1));
+ for(let it=0;it<60&&p.length>3;it++){let k=-1;for(let i=0;i<p.length;i++){const a=p[i],b=p[(i+1)%p.length];if(Math.hypot(b[0]-a[0],b[1]-a[1])<.35){k=(i+1)%p.length;break}}if(k<0)break;p.splice(k,1)}
+ if(p.length<3)return null;let ar=0;for(let i=0;i<p.length;i++){const a=p[i],b=p[(i+1)%p.length];ar+=a[0]*b[1]-b[0]*a[1]}if(ar<0)p.reverse();
+ const offP=(q,d)=>q.map((v,i)=>{const n1=nrm2(q[(i+q.length-1)%q.length],v),n2=nrm2(v,q[(i+1)%q.length]);let mx=n1[0]+n2[0],mz=n1[1]+n2[1];const ml=Math.hypot(mx,mz)||1;mx/=ml;mz/=ml;const k=d/Math.max(.45,mx*n1[0]+mz*n1[1]);return[v[0]+mx*k,v[1]+mz*k]});
+ p=offP(p,.02);const ip=offP(p,-.3);let cx=0,cz=0;p.forEach(q=>{cx+=q[0];cz+=q[1]});cx/=p.length;cz/=p.length;
+ // façade classification from the fine grid just outside each edge
+ const E=p.map((a,i)=>{const b=p[(i+1)%p.length],l=Math.hypot(b[0]-a[0],b[1]-a[1]),tx=(b[0]-a[0])/l,tz=(b[1]-a[1])/l,F={ox:a[0],oz:a[1],tx,tz,nx:tz,nz:-tx,l,busy:[]};let st=0,out=0,w=0;
+  for(const f of[.2,.5,.8]){const v=fidx(a[0]+tx*l*f+F.nx*.55,a[1]+tz*l*f+F.nz*.55);if(FG.sd[v]<.3)out++;else if(FG.dr[v]<.05){st++;const o=FG.own[v];w=Math.max(w,o>=0?CLS[edges[o].cls].w:4)}}
+  F.kind=st>=2||(st&&l<2)?'street':out>=2?'out':'party';F.w=w||2;
+  const g=(x,z)=>F.kind==='out'?Math.min(pad,H(x,z)):Gat(x,z);F.ga=g(a[0]+F.nx*.5,a[1]+F.nz*.5);F.gb=g(b[0]+F.nx*.5,b[1]+F.nz*.5);return F});
+ const r=h(),nF=2+(r>.3?1:0)+(r>.82&&L.area>45?1:0),G0=3.1,FH=2.85,top=pad+G0+(nF-1)*FH,parH=.85+h()*.35,PT=top+parH,fy=f=>pad+(f?G0+(f-1)*FH:0);
+ const q0=h(),tint=q0<.07?[.9,.95,1.03]:q0<.2?[1.02,.95,.85]:[1,.985,.955],tv=.94+.08*h(),C=tint.map(c=>c*tv),Cd=sh(C,.8);
+ // front edge: closest usable edge to the door seed, street edges preferred
+ let fe=-1,bd=1e9;E.forEach((F,i)=>{if(F.l<1.7)return;const s=clamp((L.seed.x-F.ox)*F.tx+(L.seed.z-F.oz)*F.tz,0,F.l),d=Math.hypot(F.ox+F.tx*s-L.seed.x,F.oz+F.tz*s-L.seed.z)+(F.kind==='street'?0:3);if(d<bd){bd=d;fe=i}});
+ if(fe<0)E.forEach((F,i)=>{if(fe<0||F.l>E[fe].l)fe=i});const FE=E[fe];
+ const sd=FE.l<1.8?FE.l/2:clamp((L.seed.x-FE.ox)*FE.tx+(L.seed.z-FE.oz)*FE.tz,.85,FE.l-.85),gD=Gat(FE.ox+FE.tx*sd+FE.nx*.5,FE.oz+FE.tz*sd+FE.nz*.5),dB=Math.min(gD,pad+.5)+.01;
+ const dw=.92+.2*h(),dh=2.05+.2*h(),noble=h()<.45,awn=h()<.6&&FE.kind==='street';
+ houseDoor(B,FE,sd,dB,dw,dh,noble,C);if(awn)tileAwning(B,FE,sd,dB+dh+(noble?.62:.42),dw+.9);FE.busy.push({s0:sd-dw/2-.5,s1:sd+dw/2+.5,y0:dB-1,y1:dB+dh+(awn?1.1:.6)});
+ // corbelled upper storeys on timber joists (kbu), only where they hang over the street with headroom
+ let nc=0;
+ if(nF>=2)E.forEach(F=>{if(F.kind!=='street'||F.l<2.4||h()>.62)return;const m=Math.min(1,(F.l-2.4)*.25);let s0=.3+h()*m,s1=F.l-.3-h()*m;const yb=fy(1);
+  for(const b of F.busy)if(b.y1>yb-.65&&s0<b.s1&&s1>b.s0){if(b.s0-s0>s1-b.s1)s1=b.s0;else s0=b.s1}
+  if(s1-s0<1.9)return;const d=clamp(F.w*.27,.35,.75);
+  for(const f of[0,.5,1]){const s=lerp(s0,s1,f),v=fidx(F.ox+F.tx*s+F.nx*(d+.1),F.oz+F.tz*s+F.nz*(d+.1));if(!(FG.dr[v]<-.15&&FG.sd[v]>.3)||yb-FG.y[v]<2.6)return}
+  const rc=[pt(F,s0,0,-.05),pt(F,s1,0,-.05),pt(F,s1,0,d+.3),pt(F,s0,0,d+.3)].map(q=>[q[0],q[2]]);
+  if(corb.some(o=>rc.some(q=>pinside(o,q[0],q[1]))||o.some(q=>pinside(rc,q[0],q[1]))))return;corb.push(rc);nc++;
+  const single=nF>=3&&h()<.4,yt=single?yb+FH:PT;B.box('lime',F,s0,s1,yb,yt,0,d,C,'b'+(single?'':'t'));
+  if(single)B.box('lime',F,s0-.04,s1+.04,yt,yt+.1,0,d+.06,C,'b');else B.poly('roof',[pt(F,s0,PT,0),pt(F,s1,PT,0),pt(F,s1,PT,d),pt(F,s0,PT,d)],[0,1,0]);
+  for(let s=s0+.16;s<=s1-.1;s+=.31)B.prism('wood',pt(F,s,yb-.58,0),pt(F,s,yb-.03,d-.05),.05,6);
+  B.box('wood',F,s0,s1,yb-.13,yb,d-.1,d+.015,null,'b');
+  F.busy.push({s0:s0-.1,s1:s1+.1,y0:yb-.65,y1:yt+.2});
+  const Fc=Object.assign({},F,{ox:F.ox+F.nx*d,oz:F.oz+F.nz*d,busy:[]}),fl=[];for(let f=1;f<(single?2:nF);f++)fl.push(fy(f));dress(B,Fc,s0,s1,fl,h,0,C)});
+ // ground-floor shops on main streets
+ let ns=0;if(L.seed.cls===0||h()<.12)for(const F of E){if(F.kind!=='street'||ns>=2)continue;for(let s=.5;s+1.6<F.l-.5&&ns<2;s+=.45){const gS=Gat(F.ox+F.tx*(s+.8)+F.nx*.5,F.oz+F.tz*(s+.8)+F.nz*.5);
+  if(gS<pad-1.2||gS>pad+.4||!free(F,s-.3,s+1.9,gS,gS+2.6))continue;shopDoor(B,F,s,gS+.01,C);F.busy.push({s0:s-.35,s1:s+1.95,y0:gS-1,y1:gS+2.7});ns++;s+=1.8}}
+ // façades: plinth band with rising damp, whitewash above, parapet, windows
+ let cum=0;const fys=[];for(let f=1;f<nF;f++)fys.push(fy(f));
+ E.forEach((F,i)=>{const a=p[i],b=p[(i+1)%p.length],l=F.l,y0=Math.min(pad,F.ga,F.gb)-.4,ba=clamp(F.ga+1.4,y0+.05,PT),bb=clamp(F.gb+1.4,y0+.05,PT),N=[F.nx,0,F.nz];
+  B.poly('base',[[a[0],y0,a[1]],[b[0],y0,b[1]],[b[0],bb,b[1]],[a[0],ba,a[1]]],N,[[cum/2.5,(y0-F.ga)/1.4],[(cum+l)/2.5,(y0-F.gb)/1.4],[(cum+l)/2.5,(bb-F.gb)/1.4],[cum/2.5,(ba-F.ga)/1.4]],[Cd,Cd,C,C]);
+  B.poly('lime',[[a[0],ba,a[1]],[b[0],bb,b[1]],[b[0],PT,b[1]],[a[0],PT,a[1]]],N,[[cum/2.5,ba/2.5],[(cum+l)/2.5,bb/2.5],[(cum+l)/2.5,PT/2.5],[cum/2.5,PT/2.5]],C);
+  const ia=ip[i],ib=ip[(i+1)%p.length];B.poly('lime',[[ib[0],top,ib[1]],[ia[0],top,ia[1]],[ia[0],PT,ia[1]],[ib[0],PT,ib[1]]],[-F.nx,0,-F.nz],null,C);
+  B.poly('roof',[[a[0],PT,a[1]],[b[0],PT,b[1]],[ib[0],PT,ib[1]],[ia[0],PT,ia[1]]],[0,1,0],null,C);cum+=l;
+  if(F.kind==='party')return;
+  B.box('lime',F,0,l,top-.2,top-.06,0,.07,C,'b');
+  if(F.kind==='street'&&l>3&&h()<.6){const s=l*(.3+.4*h());B.prism('wood',pt(F,s,top+.08,-.05),pt(F,s,top+.0,.42),.05,6)}
+  dress(B,F,.25,l-.25,fys,h,0,C);
+  const ys=Math.max(pad,Math.max(F.ga,F.gb))+2.1;for(let s=.6;s<l-.6;s+=1.7)if(h()<.3&&free(F,s-.2,s+.2,ys-.1,ys+.6)&&ys+.5<fy(1)+.6)slits(B,F,s,ys,1,0,C)});
+ // patio (west ed-dar) with arcaded galleries
+ let pat=null;const T=[FE.tx,FE.tz],Nv=[FE.nx,FE.nz],rect=(c,a,b2,e)=>[[-1,-1],[1,-1],[1,1],[-1,1]].map(([u,v])=>[c[0]+T[0]*u*(a/2+e)+Nv[0]*v*(b2/2+e),c[1]+T[1]*u*(a/2+e)+Nv[1]*v*(b2/2+e)]);
+ if(L.area>55&&h()<.85){let a=clamp(Math.sqrt(L.area)*.34,2.4,5.5),b2=a*(.8+.3*h());const c=[cx,cz];
+  for(let k=0;k<5&&!pat;k++){const cs=rect(c,a,b2,0);if(cs.every(q=>psd(p,q[0],q[1])>1.4)&&psd(p,c[0],c[1])>1.4)pat={c,a,b:b2,cs};else{a*=.88;b2*=.88;if(a<2.2)break}}}
+ if(pat){const ph=top+.9,inn=pat.cs,out=rect(pat.c,pat.a,pat.b,.25);
+  for(let j=0;j<4;j++){let A=inn[j],Bq=inn[(j+1)%4];const n0=nrm2(A,Bq),mx=(A[0]+Bq[0])/2,mz=(A[1]+Bq[1])/2;if(n0[0]*(pat.c[0]-mx)+n0[1]*(pat.c[1]-mz)<0)[A,Bq]=[Bq,A];
+   const sl=Math.hypot(Bq[0]-A[0],Bq[1]-A[1]),tx=(Bq[0]-A[0])/sl,tz=(Bq[1]-A[1])/sl,Fp={ox:A[0],oz:A[1],tx,tz,nx:tz,nz:-tx};
+   B.poly('lime',[[A[0],pad,A[1]],[Bq[0],pad,Bq[1]],[Bq[0],ph,Bq[1]],[A[0],ph,A[1]]],[Fp.nx,0,Fp.nz],null,C);
+   const m=Math.max(1,Math.floor(sl/1.7));for(let k=0;k<m;k++){const s=(k+.5)*sl/m;for(let f=0;f<nF;f++)archOpening(B,Fp,s,f?fy(f)+.2:pad,0,f?.8:1.05,f?1.9:2.35,'void','lime',C)}
+   for(let k=1;k<m;k++){const s=k*sl/m;B.prism('marble',pt(Fp,s,pad,.14),pt(Fp,s,pad+1.95,.14),.09,8)}
+   const oA=out[j],oB=out[(j+1)%4],on=nrm2(oA,oB),om=[(oA[0]+oB[0])/2,(oA[1]+oB[1])/2],sg=on[0]*(om[0]-pat.c[0])+on[1]*(om[1]-pat.c[1])>0?1:-1;
+   B.poly('lime',[[oA[0],top,oA[1]],[oB[0],top,oB[1]],[oB[0],ph,oB[1]],[oA[0],ph,oA[1]]],[on[0]*sg,0,on[1]*sg],null,C);
+   B.poly('roof',[[oA[0],ph,oA[1]],[oB[0],ph,oB[1]],[inn[(j+1)%4][0],ph,inn[(j+1)%4][1]],[inn[j][0],ph,inn[j][1]]],[0,1,0],null,C)}
+  B.poly('floor',inn.map(q=>[q[0],pad+.02,q[1]]),[0,1,0])}
+ // roof terrace
+ const hole=pat?pat.cs:[],all=p.concat(hole),V2=THREE.Vector2;
+ for(const t of THREE.ShapeUtils.triangulateShape(p.map(q=>new V2(q[0],q[1])),pat?[hole.map(q=>new V2(q[0],q[1]))]:[]))B.poly('roof',t.map(k=>[all[k][0],top,all[k][1]]),[0,1,0],null,C);
+ // menzah: rooftop pavilion over the stair
+ let mz=null;if(h()<.55){const sz=2.1+.5*h(),R0=Math.sqrt(L.area)*.3,pr=pat?rect(pat.c,pat.a,pat.b,.25):null;
+  for(let k=0;k<16&&!mz;k++){const mx=cx+T[0]*(h()-.5)*2*R0+Nv[0]*(h()-.5)*2*R0,mzz=cz+T[1]*(h()-.5)*2*R0+Nv[1]*(h()-.5)*2*R0,cs=rect([mx,mzz],sz,sz,0);
+   if(cs.concat([[mx,mzz]]).every(q=>psd(ip,q[0],q[1])>.1&&(!pr||psd(pr,q[0],q[1])<-.4)))mz={x:mx,z:mzz,cs,sz}}
+  if(mz){const sz=mz.sz,Fm={ox:mz.cs[0][0],oz:mz.cs[0][1],tx:T[0],tz:T[1],nx:Nv[0],nz:Nv[1]},mh=2.45,y1=top+mh+.1;
+   B.box('lime',Fm,0,sz,top,top+mh,0,sz,C,'u');B.box('lime',Fm,-.06,sz+.06,top+mh-.02,y1,-.06,sz+.06,C,'u');
+   B.box('lime',Fm,-.06,sz+.06,y1,y1+.35,-.06,.1,C,'u');B.box('lime',Fm,-.06,sz+.06,y1,y1+.35,sz-.04,sz+.06,C,'u');
+   B.box('lime',Fm,-.06,.1,y1,y1+.35,.1,sz-.04,C,'u');B.box('lime',Fm,sz-.1,sz+.06,y1,y1+.35,.1,sz-.04,C,'u');
+   const faces=[[-Nv[0],-Nv[1]],[Nv[0],Nv[1]],[-T[0],-T[1]],[T[0],T[1]]],tg=pat?pat.c:[cx,cz];let best=0,bs=-1e9;
+   faces.forEach((n,k)=>{const v=n[0]*(tg[0]-mz.x)+n[1]*(tg[1]-mz.z);if(v>bs){bs=v;best=k}});
+   faces.forEach((n,k)=>{const Ff=mkF(mz.x+n[0]*sz/2,mz.z+n[1]*sz/2,n[0],n[1],sz);
+    if(k===best)archOpening(B,Ff,sz/2,top,0,.8,1.95,'wood','lime',C);else if(k===(best^1))grille(B,Ff,sz/2,top+1.05,.55,.7,0,C);else slits(B,Ff,sz/2,top+1.5,1,0,C)})}}
+ L.house={floors:nF,height:+(PT-pad).toFixed(2),roofY:+top.toFixed(3),parapetY:+PT.toFixed(3),patio:!!pat,corbels:nc,shops:ns,menzah:!!mz,door:{x:+pt(FE,sd,0,0)[0].toFixed(3),y:+dB.toFixed(3),z:+pt(FE,sd,0,0)[2].toFixed(3),noble}};
+ const m=B.mesh(`Bldg_${String(L.id).padStart(3,'0')}`,[+cx.toFixed(3),+pad.toFixed(3),+cz.toFixed(3)]);m.userData={lot:L.id,floors:nF};return m}
 function buildTerrain(){const S=P.S,ext=S*1.3,seg=320,st=2*ext/seg,n=seg+1,pos=new Float32Array(n*n*3),uv=new Float32Array(n*n*2),col=new Float32Array(n*n*3),idx=[];
  for(let j=0;j<n;j++)for(let i=0;i<n;i++){const x=-ext+i*st,z=-ext+j*st,k=j*n+i,sd=Math.abs(x)<S*.6&&Math.abs(z)<S*.6?psd(poly,x,z):-9;
   let y;if(sd>-1.2){y=1e9;for(let q=-1;q<=1;q++)for(let w=-1;w<=1;w++)y=Math.min(y,Gat(x+q*st*1.1,z+w*st*1.1));y=Math.min(y-.35,H(x,z))}else y=H(x,z);pos[k*3]=x;pos[k*3+1]=y;pos[k*3+2]=z;uv[k*2]=x/6;uv[k*2+1]=z/6}
@@ -487,9 +683,10 @@ function buildRampart(){const gb=new GB,n=poly.length,th=1.6,gw=nodes.filter(q=>
 function gen(){const t0=performance.now();R=mul(P.seed);ph1=R()*6.28;ph2=R()*6.28;ph3=R()*6.28;stats={};
  if(group){scene.remove(group);group.traverse(o=>{if(o.geometry)o.geometry.dispose()})}group=new THREE.Group();scene.add(group);
  poly=makeRampartPoly();synth();levels();FG=fineGrid();makeLots();
- buildTerrain();buildRoads();buildLots();buildRampart();buildTour();fit();
+ buildTerrain();buildRoads();buildLots();buildHouses();buildRampart();buildTour();fit();
+ const nm={};group.traverse(o=>{if(o.isMesh&&!o.name){const b=(Array.isArray(o.material)?o.material[0]:o.material).name.replace(/^M_/,'')||'Mesh';nm[b]=(nm[b]||0)+1;o.name=`${b}_${nm[b]}`}});group.name='Casbah';
  const len=[0,0,0];edges.forEach(e=>len[e.cls]+=e.L);const dead=nodes.filter(n=>!n.dead&&n.deg===1&&n.kind==='end').length,bl=lots.filter(l=>l.buildable);
- document.getElementById('st').textContent=`شوارع ${len[0]|0} م · أزقة ${len[1]|0} م · دروب ${len[2]|0} م (${dead} مسدود) · ${stats.steps} درجة في ${stats.flights} قلبة · ${bl.length} قطعة بناء (${bl.reduce((s,l)=>s+l.area,0)|0} م²) + ${lots.length-bl.length} فضلة · ردم ${stats.fill|0} م³ / حفر ${stats.cut|0} م³ · ${Math.round(performance.now()-t0)} ms`;
+ document.getElementById('st').textContent=`شوارع ${len[0]|0} م · أزقة ${len[1]|0} م · دروب ${len[2]|0} م (${dead} مسدود) · ${stats.steps} درجة في ${stats.flights} قلبة · ${bl.length} قطعة بناء (${bl.reduce((s,l)=>s+l.area,0)|0} م²) + ${lots.length-bl.length} فضلة · ${stats.houses} دار (${stats.floors} طابق) · ردم ${stats.fill|0} م³ / حفر ${stats.cut|0} م³ · ${Math.round(performance.now()-t0)} ms`;
  exposeAPI()}
 function buildTour(){const adj=nodes.map(()=>[]);edges.forEach(e=>{adj[e.a].push([e,e.b]);adj[e.b].push([e,e.a])});
  const src=gates.T,dst=gates.B,d=nodes.map(()=>Infinity),pv=nodes.map(()=>null);d[src]=0;const Q=new Set([src]);
@@ -503,7 +700,7 @@ function exposeAPI(){window.CASBAH={params:Object.assign({},P),
  roads:edges.map(e=>({id:e.id,class:['primary','alley','derb'][e.cls],width:CLS[e.cls].w,from:e.a,to:e.b,length:+e.L.toFixed(2),centerline:e.walk.filter((_,i)=>i%2===0).map(p=>[+p.x.toFixed(3),+p.y.toFixed(3),+p.z.toFixed(3)]),
   flights:e.runs.filter(r=>r.t===1).map(r=>({from:+r.s0.toFixed(2),to:+Math.min(r.s1,e.L).toFixed(2),risers:r.ris.length,rise:+Math.abs(r.rise).toFixed(3)}))})),
  lots:lots.map(L=>({id:L.id,buildable:L.buildable,area:+L.area.toFixed(2),padY:+L.pad.toFixed(3),centroid:[+L.c[0].toFixed(3),+L.c[1].toFixed(3)],polygon:L.poly.map(q=>[+q[0].toFixed(3),+q[1].toFixed(3)]),
-  door:{x:+L.seed.x.toFixed(3),z:+L.seed.z.toFixed(3),streetY:+L.seed.dy.toFixed(3),inward:[+L.seed.dir[0].toFixed(4),+L.seed.dir[1].toFixed(4)],road:L.seed.e,roadClass:['primary','alley','derb'][L.seed.cls],steps:L.steps}})),
+  door:{x:+L.seed.x.toFixed(3),z:+L.seed.z.toFixed(3),streetY:+L.seed.dy.toFixed(3),inward:[+L.seed.dir[0].toFixed(4),+L.seed.dir[1].toFixed(4)],road:L.seed.e,roadClass:['primary','alley','derb'][L.seed.cls],steps:L.steps},building:L.house||null})),
  heightAt:(x,z)=>Gat(x,z),
   lotAt(x,z){const L=lots.find(L=>pinside(L.poly,x,z));return L?L.id:null},
  // origin on the pad at the door, +z of the frame pointing into the lot (building front faces the street)
@@ -535,6 +732,12 @@ function rebuild(){clearTimeout(tmr);tmr=setTimeout(()=>{Object.assign(P,{seed:+
 $('rd').onclick=()=>{$('sd').value=Math.random()*1e5|0;rebuild()};
 $('wl').onchange=e=>{P.wall=e.target.checked;if(rampartGroup)rampartGroup.visible=P.wall};
 $('pp').onchange=e=>{P.parapet=e.target.checked;if(parapetGroup)parapetGroup.visible=P.parapet};
+$('bd').onchange=e=>{P.bld=e.target.checked;if(bldGroup)bldGroup.visible=P.bld};
+// glTF 2.0 binary, metres, Y-up: Unreal's Interchange importer converts to cm / Z-up; helpers (lot outlines, door markers) are left out
+$('xg').onclick=()=>{const onlyB=$('xs').value==='b',root=onlyB?bldGroup:group;if(!root||typeof THREE.GLTFExporter!=='function')return;
+ const lv=lotLines.visible,bv=bldGroup.visible,msg=$('busy').textContent;lotLines.visible=false;bldGroup.visible=true;$('busy').textContent='… جاري تصدير GLB';$('busy').style.display='flex';
+ const done=()=>{lotLines.visible=lv;bldGroup.visible=bv;$('busy').style.display='none';$('busy').textContent=msg};
+ setTimeout(()=>{try{new THREE.GLTFExporter().parse(root,glb=>{done();const b=new Blob([glb],{type:'model/gltf-binary'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`casbah-${P.seed}${onlyB?'-buildings':''}.glb`;a.click()},{binary:true,onlyVisible:true,maxTextureSize:2048})}catch(err){done();console.error(err);$('st').textContent='خطأ في التصدير: '+err.message}},30)};
 $('lt').onchange=e=>{P.lots=e.target.checked;if(lotLines)lotLines.visible=P.lots};
 $('ex').onclick=()=>{const d=Object.assign({},window.CASBAH);delete d.three;const b=new Blob([JSON.stringify(d)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`casbah-${P.seed}.json`;a.click()};
 function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}addEventListener('resize',resize);resize();
