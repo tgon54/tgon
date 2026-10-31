@@ -40,7 +40,24 @@ python -m aimocap my_ai_video.mp4 out --height 1.75
 
 نتائج الكشف ثنائي الأبعاد تُحفَظ في `out/detections_2d.npz`، فإعادة التشغيل بإعدادات أخرى فورية.
 
-### تحويل إلى FBX
+### التصدير إلى Unreal Engine (UE4 / UE5) مع حركة اليدين
+
+كل معالجة تُنتج تلقائياً `motion_UE4.fbx` (هيكل UE4 Mannequin) و`motion_UE5.fbx` (هيكل UE5 Manny) دون الحاجة إلى Blender أو إعادة استهداف.
+في Unreal: Import ← اختر الملف ← Skeleton = `UE4_Mannequin_Skeleton` (أو `SK_Mannequin` في UE5) ← ألغِ Import Mesh.
+
+```bash
+python -m aimocap.unreal out --target ue4            # أو ue5 أو ملف FBX لهيكل بأسماء UE
+python -m aimocap.unreal out --target ue4 --root-motion
+```
+
+### منظّف الخط الزمني (Timeline Cleaner)
+
+شغّل `start_cleaner.bat` (أو افتح `http://127.0.0.1:8642/cleaner`). يعرض الحركة على خط زمني مع كشف تلقائي للمشاكل
+(القفزات/الأخطاء، الارتعاش، ضعف التتبع، انزلاق القدم، فقدان تتبع اليد)، وأدوات: إصلاح الخلل، التنعيم، تثبيت الوضعية، تثبيت القدم،
+إرخاء اليدين، القص، دمج الحلقة، التنظيف التلقائي، تراجع/إعادة. ثم زر **Export FBX** إلى Unreal.
+التعديلات غير مدمّرة وتُحفظ في `clean_edits.json`. من سطر الأوامر: `python -m aimocap.timeline out --auto 0.5 --target ue4`.
+
+### تحويل BVH إلى FBX عبر Blender (اختياري)
 
 ```bash
 blender -b -P blender_bvh_to_fbx.py -- out/motion.bvh out/motion.fbx
@@ -58,6 +75,8 @@ blender -b -P blender_bvh_to_fbx.py -- out/motion.bvh out/motion.fbx
 | `angles_com_contacts.csv` | زوايا المفاصل، ومركز الثقل، وتلامس القدمين |
 | `virtual_cameras_calibration.toml` | معايرة متوافقة مع FreeMoCap/anipose |
 | `debug_2d_overlay.mp4` | الكشف ثنائي الأبعاد مرسوماً على الفيديو |
+| `motion_UE4.fbx` / `motion_UE5.fbx` | حركة جاهزة لـ Unreal على هيكل Mannequin / Manny مع الأصابع |
+| `hand_left/right_3d_xyz_m.npy` | 21 نقطة ثلاثية الأبعاد لكل يد |
 
 ## كيف تولّد فيديو AI مناسباً (أهم خطوة)
 
@@ -105,4 +124,4 @@ python test_synthetic.py synthetic_out
 
 - الدقة الحقيقية تعتمد على **اتساق الفيديو المولَّد بين الزوايا**. الأداة تكشف التناقض وتخفف أثره وتقيسه في التقرير، لكنها لا تستطيع اختراع معلومات غير موجودة.
 - الأداة مصممة لشخص واحد في كل لوحة.
-- اليدان والأصابع غير مشمولة (26 نقطة للجسم والقدمين).
+- اليدان: 21 نقطة لكل يد من مقاطع حول الرسغ. اليد في فيديو AI صغيرة غالباً، لذلك يُمزج التتبع مع وضعية يد طبيعية مرتخية حسب الثقة، مع حدود تشريحية للمفاصل. عطّلها بـ `--no-hands`.

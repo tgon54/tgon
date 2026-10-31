@@ -3,6 +3,7 @@ import os
 import numpy as np
 import cv2
 
+from .hands import detect_panel_hands
 from .skeleton import J, BONE_IDX
 
 
@@ -148,8 +149,9 @@ def _pick_person(kp, sc, prev):
     return int(np.argmax(area))
 
 
-def detect_video(video, panels, use, detector, out_dir, max_frames=None, overlay=True, log=print):
-    """Run 2D detection per panel. Returns kp (V,T,J,2) panel pixels, conf (V,T,J), fps, sizes."""
+def detect_video(video, panels, use, detector, out_dir, max_frames=None, overlay=True, log=print, hand_det=None):
+    """Run 2D detection per panel. Returns kp (V,T,J,2) panel pixels, conf (V,T,J), fps, sizes,
+    hand kp (V,T,2,21,2) and hand conf (V,T,2,21) (None without `hand_det`)."""
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -157,6 +159,7 @@ def detect_video(video, panels, use, detector, out_dir, max_frames=None, overlay
         total = min(total, max_frames)
     V = len(use)
     KP, SC = [[] for _ in range(V)], [[] for _ in range(V)]
+    HK, HS = [[] for _ in range(V)], [[] for _ in range(V)]
     prev = [None] * V
     writer = None
     t = 0
@@ -177,6 +180,9 @@ def detect_video(video, panels, use, detector, out_dir, max_frames=None, overlay
                 k, s = kp[i], sc[i]
                 prev[v] = k
             KP[v].append(k); SC[v].append(s)
+            if hand_det is not None:
+                hk, hs = detect_panel_hands(hand_det, fr[y0:y1, x0:x1], k, s)
+                HK[v].append(hk); HS[v].append(hs)
             if writer is not None and i is not None:
                 for a, b in BONE_IDX:
                     if s[a] > .3 and s[b] > .3:
@@ -186,6 +192,12 @@ def detect_video(video, panels, use, detector, out_dir, max_frames=None, overlay
                     col = (0, 255, 0) if s[j] > .6 else (0, 165, 255) if s[j] > .3 else (0, 0, 255)
                     cv2.circle(fr, (int(x0 + k[j, 0]), int(y0 + k[j, 1])), 3, col, -1)
                 cv2.putText(fr, f'view {v}', (x0 + 6, y0 + 18), 0, .5, (255, 255, 255), 1)
+                if hand_det is not None:
+                    for h in range(2):
+                        for j in range(21):
+                            if hs[h, j] > .3:
+                                cv2.circle(fr, (int(x0 + hk[h, j, 0]), int(y0 + hk[h, j, 1])), 2,
+                                           (255, 120, 255) if h == 0 else (255, 200, 80), -1)
         if writer is not None:
             writer.write(fr)
         t += 1
@@ -195,4 +207,6 @@ def detect_video(video, panels, use, detector, out_dir, max_frames=None, overlay
     if writer is not None:
         writer.release()
     sizes = [(panels[pi][2] - panels[pi][0], panels[pi][3] - panels[pi][1]) for pi in use]
-    return np.array(KP), np.array(SC), fps, sizes
+    if hand_det is None:
+        return np.array(KP), np.array(SC), fps, sizes, None, None
+    return np.array(KP), np.array(SC), fps, sizes, np.array(HK), np.array(HS)

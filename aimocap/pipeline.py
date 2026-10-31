@@ -53,7 +53,8 @@ def calibrate(kp, conf, sizes, o, log=print):
     return best[1], best[0]
 
 
-def reconstruct(kp, conf, sizes, fps, opts=None, log=print):
+def reconstruct(kp, conf, sizes, fps, opts=None, log=print, hands2d=None):
+    """hands2d: optional (hand kp (V,T,2,21,2), hand conf (V,T,2,21)) -> res['hands']."""
     o = dict(DEFAULTS, **(opts or {}))
     V, T = kp.shape[:2]
     rep = {'views': V, 'frames': T, 'fps': fps, 'options': {k: v for k, v in o.items()}}
@@ -118,6 +119,16 @@ def reconstruct(kp, conf, sizes, fps, opts=None, log=print):
     Xp, npen = K.clamp_ground(Xp)
     rep['ground_clamped_samples'] = npen
 
+    # 9) smart hands: triangulate 21-point hands, follow arm L/R decisions, attach to wrists
+    hands = None
+    if hands2d is not None and hands2d[0] is not None:
+        from .hands import reconstruct_hands
+        hands = reconstruct_hands(cams, hands2d[0], hands2d[1], dec['arms'], Xf, Xw, Xp, mir, fps,
+                                  min_conf=o['min_conf'])
+        rep['hands_tracked_pct'] = {s: (float((np.median(hands['conf_' + s], 1) > 0.5).mean() * 100)
+                                        if hands[s] is not None else 0.0) for s in ('left', 'right')}
+        log(f'  hands tracked (% frames): {rep["hands_tracked_pct"]}')
+
     # raw aligned for comparison
     Xr, _ = K.fill_gaps(Xraw, np.isfinite(Xraw).all(-1).astype(float))
     Xr, _ = K.fix_global_mirror(Xr)
@@ -138,7 +149,7 @@ def reconstruct(kp, conf, sizes, fps, opts=None, log=print):
 
     return dict(final=Xp, raw=Xr, triangulated=stage_tri, quality=q, contacts=cont,
                 cameras=cams, err=err, used=used, gflags=gflags, swaps=dec, report=rep,
-                com=center_of_mass(Xp), angles=joint_angles(Xp), fps=fps)
+                com=center_of_mass(Xp), angles=joint_angles(Xp), fps=fps, hands=hands)
 
 
 # ----------------------------------------------------------------- export --
@@ -168,41 +179,77 @@ def export_all(res, out, log=print):
     data = dict(fps=fps, joints=NAMES, bones=[list(b) for b in BONES], corrected=r(P), raw=r(res['raw']),
                 quality=np.round(res['quality'], 2).tolist(), com=r(res['com']),
                 contacts={k: v.astype(int).tolist() for k, v in res['contacts'].items()})
+    hands = res.get('hands')
+    if hands:
+        data['hands'] = {k: (r(v) if k in ('left', 'right') else np.round(v, 2).tolist()) if v is not None else None
+                         for k, v in hands.items()}
+        for side in ('left', 'right'):
+            if hands[side] is not None:
+                np.save(os.path.join(out, f'hand_{side}_3d_xyz_m.npy'), hands[side])
     json.dump(dict(data, raw=None), open(os.path.join(out, 'motion.json'), 'w'), separators=(',', ':'))
-    write_viewer(data, os.path.join(out, 'viewer.html'))
+    write_viewer(dict(data, hands=None), os.path.join(out, 'viewer.html'))
+    # Unreal Engine: animation baked on the UE4 Mannequin and UE5 Manny skeletons
+    from .unreal import export_unreal
+    for tgt in ('ue4', 'ue5'):
+        try:
+            export_unreal(P, fps, os.path.join(out, f'motion_{tgt.upper()}.fbx'), tgt, hands, res['contacts'], log=log)
+        except Exception as e:
+            log(f'  Unreal {tgt} export failed: {type(e).__name__}: {e}')
     json.dump(res['report'], open(os.path.join(out, 'report.json'), 'w'), indent=2, default=float)
     write_report(res, os.path.join(out, 'report.html'))
     log('  exported: motion.bvh, motion.json, viewer.html, report.html, CSV/NPY, calibration TOML')
 
 
-def run(video, out, grid='auto', panels=None, opts=None, mode='performance', device='auto',
-        max_frames=None, log=print):
+def _panels(video, grid, panels, log):
     from . import video as Vd
     import cv2
+    cap = cv2.VideoCapture(video); W = int(cap.get(3)); H = int(cap.get(4)); cap.release()
+    if isinstance(grid, (tuple, list)):
+        xb, yb = [int(v) for v in grid[0]], [int(v) for v in grid[1]]
+    elif grid != 'auto':
+        xb, yb = Vd.grid_from_spec(grid, W, H)
+    else:
+        xb, yb = Vd.detect_grid(video)
+    pans = Vd.panels_from_grid(xb, yb)
+    use = panels if panels is not None else list(range(len(pans)))
+    log(f'grid columns={xb} rows={yb} -> {len(pans)} panels, using {use}')
+    return pans, use
+
+
+def run(video, out, grid='auto', panels=None, opts=None, mode='performance', device='auto',
+        max_frames=None, log=print, hands=True):
+    from . import video as Vd
     os.makedirs(out, exist_ok=True)
     cache = os.path.join(out, 'detections_2d.npz')
+    hk = hs = None
     if os.path.exists(cache):
         d = np.load(cache, allow_pickle=True)
         kp, conf, fps, sizes = d['kp'], d['conf'], float(d['fps']), [tuple(s) for s in d['sizes']]
         log(f'loaded cached 2D detections ({cache})')
+        if 'hkp' in d:
+            hk, hs = d['hkp'], d['hconf']
+        elif hands:
+            from .hands import HandDetector, detect_hands_video
+            pans, use = _panels(video, grid, panels, log)
+            hdet = HandDetector(device='cuda' if device in ('auto', 'cuda') else 'cpu')
+            log('2D hand detection (RTMPose hand) on cached body poses...')
+            hk, hs = detect_hands_video(video, pans, use, kp, conf, hdet, max_frames, log=log)
+            np.savez(cache, kp=kp, conf=conf, fps=fps, sizes=np.array(sizes), hkp=hk, hconf=hs)
     else:
-        cap = cv2.VideoCapture(video); W = int(cap.get(3)); H = int(cap.get(4)); cap.release()
-        if isinstance(grid, (tuple, list)):
-            xb, yb = [int(v) for v in grid[0]], [int(v) for v in grid[1]]
-        elif grid != 'auto':
-            xb, yb = Vd.grid_from_spec(grid, W, H)
-        else:
-            xb, yb = Vd.detect_grid(video)
-        pans = Vd.panels_from_grid(xb, yb)
-        use = panels if panels is not None else list(range(len(pans)))
-        log(f'grid columns={xb} rows={yb} -> {len(pans)} panels, using {use}')
+        pans, use = _panels(video, grid, panels, log)
         if len(use) < 2:
             raise SystemExit('Need at least 2 views. Use --grid RxC if auto-detection failed.')
         det = Vd.Detector(mode=mode, device=device)
         log(f'2D detector: RTMPose Halpe-26 ({mode}) on {det.device}')
-        kp, conf, fps, sizes = Vd.detect_video(video, pans, use, det, out, max_frames, log=log)
-        np.savez(cache, kp=kp, conf=conf, fps=fps, sizes=np.array(sizes))
+        hdet = None
+        if hands:
+            from .hands import HandDetector
+            hdet = HandDetector(device=det.device)
+            log('2D hand detector: RTMPose hand-21 (smart hand motion)')
+        kp, conf, fps, sizes, hk, hs = Vd.detect_video(video, pans, use, det, out, max_frames, log=log, hand_det=hdet)
+        extra = dict(hkp=hk, hconf=hs) if hk is not None else {}
+        np.savez(cache, kp=kp, conf=conf, fps=fps, sizes=np.array(sizes), **extra)
     log('3D reconstruction + smart correction...')
-    res = reconstruct(kp, conf, sizes, fps, opts, log)
+    res = reconstruct(kp, conf, sizes, fps, opts, log, hands2d=(hk, hs) if hands and hk is not None else None)
     export_all(res, out, log)
     return res

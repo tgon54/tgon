@@ -409,7 +409,10 @@ async function start(){
 const FILES={'motion.bvh':['BVH','حركة للشخصيات — Blender / Unity / Unreal / Mixamo'],'motion.json':['JSON','للعبة في Three.js'],'viewer.html':['HTML','العارض ثلاثي الأبعاد (يعمل دون إنترنت)'],
   'report.html':['HTML','التقرير العلمي'],'report.json':['JSON','مقاييس الجودة'],'body_3d_xyz_m.csv':['CSV','المواقع ثلاثية الأبعاد لكل إطار'],'angles_com_contacts.csv':['CSV','الزوايا ومركز الثقل والتلامس'],
   'body_3d_xyz_m.npy':['NPY','المواقع (NumPy)'],'body_3d_raw_xyz_m.npy':['NPY','المواقع الخام قبل التصحيح'],'body_3d_quality.npy':['NPY','جودة كل مفصل'],'center_of_mass_xyz_m.npy':['NPY','مركز الثقل'],
-  'virtual_cameras_calibration.toml':['TOML','معايرة متوافقة مع FreeMoCap'],'debug_2d_overlay.mp4':['MP4','الكشف ثنائي الأبعاد على الفيديو'],'detections_2d.npz':['NPZ','نتائج الكشف المحفوظة']};
+  'virtual_cameras_calibration.toml':['TOML','معايرة متوافقة مع FreeMoCap'],'debug_2d_overlay.mp4':['MP4','الكشف ثنائي الأبعاد على الفيديو'],'detections_2d.npz':['NPZ','نتائج الكشف المحفوظة'],
+  'motion_UE4.fbx':['FBX','Unreal Engine 4 — UE4_Mannequin_Skeleton (مع حركة الأصابع)'],'motion_UE5.fbx':['FBX','Unreal Engine 5 — SK_Mannequin (Manny)'],
+  'motion_clean.json':['JSON','الحركة بعد منظّف الخط الزمني'],'motion_clean.bvh':['BVH','الحركة بعد التنظيف'],'clean_edits.json':['JSON','تعديلات منظّف الخط الزمني'],
+  'hand_left_3d_xyz_m.npy':['NPY','نقاط اليد اليسرى 21×3'],'hand_right_3d_xyz_m.npy':['NPY','نقاط اليد اليمنى 21×3']};
 let lastLogLen=0,curTab='viewer';
 async function showJob(id){
   let j;try{j=await api('/api/jobs/'+id)}catch(e){$('#main').innerHTML=`<div class="err">${esc(e.message)}</div>`;return}
@@ -417,7 +420,7 @@ async function showJob(id){
   const head=`<div class="jhead"><div><h1>${esc(j.video_name)}</h1><div class="hint">${fmtT(j.created)} · ${st.panels.length} زوايا · ${st.yaws?'اتجاهات يدوية':'اتجاهات تلقائية'} · طول ${st.height} م${st.reuse_from?' · إعادة تصحيح':''}</div></div>
     <span class="sp"></span><span class="status"><span class="dot ${s[0]}"></span>${s[1]}</span>
     ${j.status==='running'?`<button class="btn danger" onclick="cancelJob('${id}')">إلغاء</button>`:
-      `${j.status==='done'?`<button class="btn" onclick="go('#rerun/${id}')">تعديل التصحيح وإعادة التشغيل</button>`:''}<button class="btn danger" onclick="delJob('${id}')">حذف</button>`}</div>`;
+      `${j.status==='done'?`<a class="btn pri" href="/cleaner#${id}">منظّف الخط الزمني ← Unreal</a>${j.video?`<button class="btn" onclick="go('#rerun/${id}')">`:'<span style="display:none">'}تعديل التصحيح وإعادة التشغيل${j.video?'</button>':'</span>'}`:''}<button class="btn danger" onclick="delJob('${id}')">حذف</button>`}</div>`;
   if(j.status==='running'){
     const ci=STAGES.findIndex(x=>x[0]===j.stage);
     $('#main').innerHTML=head+`<div class="card"><div style="display:flex;align-items:baseline;gap:14px"><span class="prog">${Math.round(j.progress*100)}%</span><span class="hint">${STAGES[ci]?.[1]||''}…</span></div>
@@ -455,7 +458,7 @@ async function showJob(id){
     else if(t==='report')$('#tab').innerHTML=`<iframe class="frame" src="/files/${id}/report.html"></iframe>`;
     else $('#tab').innerHTML=`<div class="files">${(j.files||[]).map(f=>{const d=FILES[f]||[f.split('.').pop().toUpperCase(),''];
       return `<a class="file" href="/files/${id}/${f}?dl=1"><span class="ext">${d[0]}</span><div><div class="n">${esc(f)}</div><div class="s">${d[1]}</div></div></a>`}).join('')}</div>
-      <p class="hint">لتحويل BVH إلى FBX: <span class="ltr">blender -b -P blender_bvh_to_fbx.py -- motion.bvh motion.fbx</span></p>`};
+      <p class="hint">Unreal: استورد <span class="ltr">motion_UE4.fbx</span> واختر الهيكل <span class="ltr">UE4_Mannequin_Skeleton</span> (أو <span class="ltr">motion_UE5.fbx</span> مع <span class="ltr">SK_Mannequin</span>) وألغِ Import Mesh. للتنظيف والقص قبل التصدير استخدم <a href="/cleaner#${id}">منظّف الخط الزمني</a>.</p>`};
   $$('#tabs button').forEach(b=>b.onclick=()=>show(b.dataset.t));show(curTab);
 }
 async function cancelJob(id){await api(`/api/jobs/${id}/cancel`,{method:'POST'}).catch(e=>toast(e.message,1));toast('جارٍ الإلغاء…')}

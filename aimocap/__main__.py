@@ -16,13 +16,14 @@ def main():
     ap.add_argument('--mode', default='performance', choices=['performance', 'balanced', 'lightweight'])
     ap.add_argument('--device', default='auto', choices=['auto', 'cuda', 'cpu'])
     ap.add_argument('--max-frames', type=int, default=None)
+    ap.add_argument('--no-hands', action='store_true', help='skip smart hand/finger tracking')
     a = ap.parse_args()
     from .pipeline import run
     opts = dict(height=a.height, fov=a.fov, cutoff=a.cutoff)
     if a.yaws:
         opts['yaws'] = [float(v) for v in a.yaws.split(',')]
     panels = [int(v) for v in a.panels.split(',')] if a.panels else None
-    run(a.video, a.out, grid=a.grid, panels=panels, opts=opts, mode=a.mode, device=a.device, max_frames=a.max_frames)
+    run(a.video, a.out, grid=a.grid, panels=panels, opts=opts, mode=a.mode, device=a.device, max_frames=a.max_frames, hands=not a.no_hands)
     print('done ->', a.out)
 
 

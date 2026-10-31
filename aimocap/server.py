@@ -20,6 +20,7 @@ import cv2
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(ROOT, 'ui', 'index.html')
+CLEANER_UI = os.path.join(ROOT, 'ui', 'cleaner.html')
 WS = os.environ.get('AIMOCAP_WORKSPACE', os.path.join(os.path.dirname(ROOT), 'aimocap_workspace'))
 UP, JOBS = os.path.join(WS, 'videos'), os.path.join(WS, 'jobs')
 os.makedirs(UP, exist_ok=True); os.makedirs(JOBS, exist_ok=True)
@@ -210,6 +211,67 @@ def start_job(body):
     return jid
 
 
+# ------------------------------------------------------- timeline cleaner --
+def _out(jid):
+    d = os.path.join(JOBS, os.path.basename(jid), 'out')
+    if not os.path.exists(os.path.join(d, 'motion.json')):
+        raise ValueError('this job has no motion yet')
+    return d
+
+
+def _motion_payload(m, issues=True):
+    from .timeline import analyze, to_json
+    d = to_json(m)
+    d['quality'] = np.round(np.mean(m['quality'], 1), 3).tolist() if m.get('quality') is not None else None
+    if issues:
+        d['severity'], d['issues'] = analyze(m)
+    return d
+
+
+def job_motion(jid):
+    from .timeline import load, load_edits
+    from .skeleton import NAMES, BONES
+    out = _out(jid)
+    d = _motion_payload(load(out))
+    j = jread(os.path.join(JOBS, jid, 'job.json'), {})
+    d.update(id=jid, name=j.get('video_name', jid), joints=NAMES, bones=[list(b) for b in BONES],
+             edits=load_edits(out), files=sorted(os.listdir(out)))
+    return d
+
+
+def clean_preview(jid, body):
+    from .timeline import load, apply_edits
+    c = apply_edits(load(_out(jid)), body.get('edits', []))
+    d = _motion_payload(c)
+    d['trim'] = c['trim']
+    return d
+
+
+def clean_export(jid, body):
+    from .timeline import save_clean
+    targets = [t for t in body.get('targets', ['ue4']) if t in ('ue4', 'ue5')] or ['ue4']
+    log = []
+    files, c = save_clean(_out(jid), body.get('edits', []), targets, bool(body.get('root_motion')),
+                          body.get('name') or None, log=log.append)
+    return dict(files=files, frames=len(c['P']), log=log)
+
+
+def import_motion(raw, name):
+    """Register an AI-MoCap motion.json (e.g. from the CLI) as a finished job for the cleaner."""
+    d = json.loads(raw)
+    if 'corrected' not in d or 'fps' not in d:
+        raise ValueError('not an AI-MoCap motion.json (needs "corrected" and "fps")')
+    jid = time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:4]
+    out = os.path.join(JOBS, jid, 'out'); os.makedirs(out)
+    T = len(d['corrected'])
+    d.setdefault('quality', [[1.0] * len(d['corrected'][0])] * T)
+    json.dump(d, open(os.path.join(out, 'motion.json'), 'w'), separators=(',', ':'))
+    jwrite(os.path.join(JOBS, jid, 'job.json'),
+           dict(id=jid, video=None, video_name=name, settings=dict(panels=[], height='-', yaws=None), status='done', stage='export',
+                progress=1.0, created=time.time(), imported=True, log=['imported ' + name]))
+    return jid
+
+
 # ------------------------------------------------------------------ server --
 class H(BaseHTTPRequestHandler):
     server_version = 'aimocap'
@@ -259,6 +321,11 @@ class H(BaseHTTPRequestHandler):
         try:
             if p in ('/', '/index.html'):
                 return self._send(200, open(UI, 'rb').read(), 'text/html; charset=utf-8')
+            if p in ('/cleaner', '/cleaner.html'):
+                return self._send(200, open(CLEANER_UI, 'rb').read(), 'text/html; charset=utf-8')
+            m = re.match(r'^/api/jobs/([\w-]+)/motion$', p)
+            if m:
+                return self._send(200, job_motion(m.group(1)))
             if p == '/api/status':
                 return self._send(200, dict(workspace=WS, running=list(RUNNING), gpu=_gpu()))
             if p == '/api/videos':
@@ -319,6 +386,15 @@ class H(BaseHTTPRequestHandler):
                     return self._err(str(e))
             if p == '/api/jobs':
                 return self._send(200, {'id': start_job(self._body())})
+            m = re.match(r'^/api/jobs/([\w-]+)/(clean|export)$', p)
+            if m:
+                if m.group(1) in RUNNING:
+                    raise ValueError('job is still running')
+                fn = clean_preview if m.group(2) == 'clean' else clean_export
+                return self._send(200, fn(m.group(1), self._body()))
+            if p == '/api/import_motion':
+                n = int(self.headers.get('Content-Length') or 0)
+                return self._send(200, {'id': import_motion(self.rfile.read(n), unquote(self.headers.get('X-Filename', 'motion.json')))})
             m = re.match(r'^/api/jobs/([\w-]+)/cancel$', p)
             if m:
                 r = RUNNING.get(m.group(1))
@@ -375,7 +451,8 @@ def main():
     print('workspace   ->', WS)
     print('(Ctrl+C to stop)')
     if '--no-browser' not in sys.argv:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+        page = url + ('cleaner' if '--cleaner' in sys.argv else '')
+        threading.Timer(0.8, lambda: webbrowser.open(page)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

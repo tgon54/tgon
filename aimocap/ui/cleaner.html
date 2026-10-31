@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI-MoCap · Timeline Cleaner</title>
+<style>
+:root{--bg:#0a0e13;--panel:#11171f;--panel2:#161e28;--line:#223040;--fg:#e6edf4;--mut:#8b9aab;--dim:#5f6f80;
+--acc:#2ed3c6;--accbg:rgba(46,211,198,.12);--ok:#5ad08a;--warn:#f0b14a;--bad:#f06a6a;--left:#ff9a3c;--right:#4f8cff;--r:10px}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.4 system-ui,Segoe UI,Roboto,sans-serif}
+button,input,select{font:inherit;color:inherit}
+.btn{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 11px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--acc)}.btn:disabled{opacity:.4;cursor:default}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#04211f;font-weight:600}
+.btn.sm{padding:3px 8px;font-size:12px}.btn.on{background:var(--accbg);border-color:var(--acc);color:var(--acc)}
+a{color:var(--acc)}
+#app{display:grid;grid-template-rows:auto 1fr auto;height:100%}
+header{display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:15px;margin:0 8px 0 0;white-space:nowrap}header .name{color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+main{display:grid;grid-template-columns:1fr 330px;min-height:0}
+#view{position:relative;min-height:0;background:radial-gradient(ellipse at 50% 30%,#141c26,#0a0e13)}
+#c3d{width:100%;height:100%;display:block;cursor:grab}
+.hud{position:absolute;left:12px;top:10px;color:var(--mut);font-size:12px;pointer-events:none}
+.hud b{color:var(--fg)}.vopts{position:absolute;right:10px;top:10px;display:flex;gap:6px}
+aside{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:10px}
+.card h3{margin:0 0 8px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut)}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:5px 0}
+.row label{color:var(--mut)}input[type=range]{flex:1;accent-color:var(--acc)}
+input[type=number],input[type=text],select{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.list{display:flex;flex-direction:column;gap:4px;max-height:190px;overflow:auto}
+.item{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;background:var(--bg);border:1px solid transparent;cursor:pointer}
+.item:hover,.item.sel{border-color:var(--acc)}.item .t{flex:1}.item .x{color:var(--dim);cursor:pointer;padding:0 4px}.item .x:hover{color:var(--bad)}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.hint{color:var(--dim);font-size:12px}
+footer{border-top:1px solid var(--line);background:var(--panel);padding:6px 10px 8px}
+.transport{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+.transport .fr{font-variant-numeric:tabular-nums;color:var(--mut);min-width:150px}
+#tl{width:100%;display:block;cursor:crosshair;border-radius:6px}
+#pick{position:fixed;inset:0;background:rgba(5,8,12,.86);display:none;align-items:center;justify-content:center;z-index:5}
+#pick .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;width:min(640px,92vw);max-height:80vh;overflow:auto}
+.files a{display:block;margin:3px 0}
+#toast{position:fixed;bottom:150px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--acc);padding:8px 14px;border-radius:8px;display:none;z-index:9}
+.busy{opacity:.6}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>⏱ Timeline Cleaner</h1><div class="name" id="jname">—</div>
+    <button class="btn" id="undo" title="Ctrl+Z">↶ Undo</button><button class="btn" id="redo" title="Ctrl+Y">↷ Redo</button>
+    <button class="btn" id="reset">Reset</button>
+    <button class="btn" onclick="openPicker()">Open…</button>
+    <a class="btn" href="/" title="Back to AI-MoCap">AI-MoCap</a>
+  </header>
+  <main>
+    <div id="view"><canvas id="c3d"></canvas>
+      <div class="hud" id="hud"></div>
+      <div class="vopts"><button class="btn sm on" id="optGhost" title="Show original motion as a ghost">Ghost</button>
+        <button class="btn sm on" id="optFollow">Follow</button><button class="btn sm" id="optFront">Front</button><button class="btn sm" id="optSide">Side</button></div>
+    </div>
+    <aside>
+      <div class="card"><h3>Selection</h3>
+        <div class="row" id="selInfo"><span class="hint">Drag on the timeline to select frames</span></div>
+        <div class="row"><button class="btn" data-op="interpolate" title="Rebuild the range from the frames around it">Fix glitch</button>
+          <button class="btn" data-op="hold">Hold pose</button><button class="btn" data-op="foot_lock" title="Pin planted feet">Foot lock</button></div>
+        <div class="row"><button class="btn" data-op="smooth">Smooth</button><input type="range" id="smoothS" min="0" max="1" step="0.05" value="0.5"><span id="smoothV">0.50</span></div>
+        <div class="row"><button class="btn" data-op="relax_hands" title="Use the natural relaxed hand instead of tracked fingers">Relax hands</button>
+          <select id="handSide"><option value="both">both</option><option value="left">left</option><option value="right">right</option></select></div>
+        <div class="row"><button class="btn" data-op="trim">Trim to selection</button><button class="btn" id="clearSel">Clear</button></div>
+      </div>
+      <div class="card"><h3>Auto</h3>
+        <div class="row"><button class="btn pri" id="autoBtn">Auto-clean</button><input type="range" id="autoS" min="0" max="1" step="0.05" value="0.5"><span id="autoV">0.50</span></div>
+        <div class="row"><button class="btn" id="loopBtn">Loop blend</button><input type="number" id="loopN" min="2" max="60" value="10" style="width:60px"> frames</div>
+        <div class="hint">Auto-clean removes detected spikes (AI glitches) and smooths jitter. Edits are non-destructive.</div>
+      </div>
+      <div class="card"><h3>Issues <span class="hint" id="issCount"></span></h3><div class="list" id="issues"></div>
+        <div class="row"><button class="btn sm" id="fixAll">Fix all spikes</button></div></div>
+      <div class="card"><h3>Edits</h3><div class="list" id="edits"></div></div>
+      <div class="card"><h3>Export to Unreal</h3>
+        <div class="row"><label>Name</label><input type="text" id="expName" value="motion_clean" style="flex:1"></div>
+        <div class="row"><label><input type="checkbox" id="tUE4" checked> UE4 Mannequin</label><label><input type="checkbox" id="tUE5"> UE5 Manny</label></div>
+        <div class="row"><label><input type="checkbox" id="rootMotion"> Root motion (root bone follows pelvis)</label></div>
+        <div class="row"><button class="btn pri" id="expBtn">Export FBX</button></div>
+        <div id="expOut" class="files"></div>
+        <div class="hint">Unreal: Import the FBX → Skeleton <b>UE4_Mannequin_Skeleton</b> (UE5: <b>SK_Mannequin</b>) → untick <i>Import Mesh</i>. Fingers are included.</div>
+      </div>
+    </aside>
+  </main>
+  <footer>
+    <div class="transport">
+      <button class="btn sm" id="bStart" title="Home">⏮</button><button class="btn sm" id="bPrev" title="←">◀</button>
+      <button class="btn sm" id="bPlay" title="Space">▶</button><button class="btn sm" id="bNext" title="→">▶|</button>
+      <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select>
+      <button class="btn sm on" id="bLoop" title="Loop playback">⟲</button>
+      <span class="fr" id="frInfo"></span>
+      <span class="hint">Space play · ←/→ step · I/O set in/out · Del remove edit · Ctrl+Z/Y</span>
+      <span style="flex:1"></span>
+      <label class="hint">Curve <select id="curveJ"></select></label>
+    </div>
+    <canvas id="tl" height="170"></canvas>
+  </footer>
+</div>
+<div id="pick"><div class="box"><h2 style="margin-top:0">Open motion</h2>
+  <div id="jobList" class="list" style="max-height:50vh"></div>
+  <p class="hint">Or import a <b>motion.json</b> produced by the command line:</p>
+  <input type="file" id="impFile" accept=".json,application/json">
+  <div class="row" style="justify-content:flex-end"><button class="btn" onclick="$('#pick').style.display='none'">Close</button></div>
+</div></div>
+<div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const ISS={spike:['Spike / glitch','#f06a6a','interpolate'],jitter:['Jitter','#f0b14a','smooth'],low_quality:['Low tracking quality','#e3d35a','smooth'],
+  foot_skate:['Foot skating','#b77dff','foot_lock'],hand_lost:['Hand tracking lost','#4fb8ff','relax_hands']};
+const OPC={interpolate:'#f06a6a',smooth:'#f0b14a',hold:'#9aa6b2',foot_lock:'#b77dff',relax_hands:'#4fb8ff',auto_clean:'#2ed3c6',trim:'#5ad08a',loop:'#5ad08a'};
+const FING=[[0,1,2,3,4],[0,5,6,7,8],[0,9,10,11,12],[0,13,14,15,16],[0,17,18,19,20],[5,9,13,17]];
+let S={id:null,orig:null,clean:null,edits:[],undo:[],redo:[],f:0,sel:null,play:false,selEdit:-1,trim:null,curve:'right_wrist'};
+let cam={yaw:0.6,pitch:0.25,dist:4.2,cx:0,cy:0.9,cz:0}, opt={ghost:true,follow:true};
+
+function toast(m,ms=2600){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',ms)}
+async function api(u,o={}){const r=await fetch(u,o);const j=await r.json().catch(()=>({error:r.statusText}));if(!r.ok||j.error)throw new Error(j.error||r.statusText);return j}
+const post=(u,b)=>api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+const T=()=>S.orig?S.orig.frames:0;
+
+// ------------------------------------------------------------------ load
+async function openPicker(){
+  $('#pick').style.display='flex';
+  const jobs=(await api('/api/jobs')).filter(j=>j.status==='done');
+  $('#jobList').innerHTML=jobs.length?jobs.map(j=>`<div class="item" onclick="location.hash='${j.id}';$('#pick').style.display='none'"><span class="t">${esc(j.video_name||j.id)}</span><span class="hint">${j.id}</span></div>`).join('')
+    :'<p class="hint">No finished jobs yet — process a video in AI-MoCap first, or import a motion.json.</p>';
+}
+$('#impFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;
+  try{const r=await api('/api/import_motion',{method:'POST',headers:{'X-Filename':encodeURIComponent(f.name)},body:await f.text()});
+    $('#pick').style.display='none';location.hash=r.id}catch(err){toast(err.message)}};
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+async function load(id){
+  try{
+    const d=await api(`/api/jobs/${id}/motion`);
+    S={...S,id,orig:d,clean:null,undo:[],redo:[],f:0,sel:null,selEdit:-1,trim:null};
+    const saved=localStorage.getItem('aimocap-edits-'+id);
+    S.edits=saved?JSON.parse(saved):(d.edits||[]);
+    $('#jname').textContent=d.name;const nm=(d.name||'').replace(/\.[^.]+$/,'').replace(/[^\w-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,40);
+    $('#expName').value=(/[A-Za-z]{3}/.test(nm)?nm:'motion')+'_clean';
+    $('#curveJ').innerHTML=d.joints.map(j=>`<option ${j===S.curve?'selected':''}>${j}</option>`).join('');
+    $('#expOut').innerHTML='';
+    fitCam();await refresh();
+  }catch(e){toast(e.message);openPicker()}
+}
+window.onhashchange=()=>{const id=location.hash.slice(1);if(id)load(id)};
+
+let pend=null;
+async function refresh(){
+  localStorage.setItem('aimocap-edits-'+S.id,JSON.stringify(S.edits));
+  renderEdits();
+  const my=pend={};document.body.classList.add('busy');
+  try{const c=await post(`/api/jobs/${S.id}/clean`,{edits:S.edits});if(my!==pend)return;S.clean=c;S.trim=c.trim}
+  catch(e){toast('Preview failed: '+e.message)}
+  finally{if(my===pend)document.body.classList.remove('busy')}
+  renderIssues();drawTL();draw3d();
+}
+function pushEdit(e){S.undo.push(JSON.stringify(S.edits));S.redo=[];S.edits=[...S.edits,e];refresh()}
+function setEdits(list){S.undo.push(JSON.stringify(S.edits));S.redo=[];S.edits=list;refresh()}
+$('#undo').onclick=()=>{if(!S.undo.length)return;S.redo.push(JSON.stringify(S.edits));S.edits=JSON.parse(S.undo.pop());refresh()};
+$('#redo').onclick=()=>{if(!S.redo.length)return;S.undo.push(JSON.stringify(S.edits));S.edits=JSON.parse(S.redo.pop());refresh()};
+$('#reset').onclick=()=>{if(S.edits.length&&confirm('Remove all edits?'))setEdits([])};
+
+// ------------------------------------------------------------------ edits
+function opLabel(e){const r=e.start!=null?` ${e.start}–${e.end}`:'';
+  return {interpolate:'Fix glitch',smooth:`Smooth ${(+e.strength).toFixed(2)}`,hold:'Hold pose',foot_lock:'Foot lock',relax_hands:`Relax hands (${e.side})`,
+    auto_clean:`Auto-clean ${(+e.strength).toFixed(2)}`,trim:'Trim',loop:`Loop blend ${e.frames}f`}[e.op]+r}
+function renderEdits(){
+  $('#edits').innerHTML=S.edits.length?S.edits.map((e,i)=>`<div class="item ${i===S.selEdit?'sel':''}" data-i="${i}"><span class="dot" style="background:${OPC[e.op]}"></span><span class="t">${opLabel(e)}</span><span class="x" data-x="${i}">✕</span></div>`).join('')
+    :'<span class="hint">No edits yet</span>';
+  $$('#edits .item').forEach(el=>el.onclick=ev=>{const i=+el.dataset.i;
+    if(ev.target.dataset.x!=null){setEdits(S.edits.filter((_,k)=>k!==i));S.selEdit=-1;return}
+    S.selEdit=i;const e=S.edits[i];if(e.start!=null){S.sel=[e.start,e.end];S.f=e.start}renderEdits();updSel();drawTL();draw3d()});
+  $('#undo').disabled=!S.undo.length;$('#redo').disabled=!S.redo.length;
+}
+function needSel(){if(!S.sel){toast('Select a frame range on the timeline first');return null}return S.sel}
+$$('[data-op]').forEach(b=>b.onclick=()=>{const s=needSel();if(!s)return;const e={op:b.dataset.op,start:s[0],end:s[1]};
+  if(e.op==='smooth')e.strength=+$('#smoothS').value;if(e.op==='relax_hands')e.side=$('#handSide').value;
+  if(e.op==='trim'){setEdits([...S.edits.filter(x=>x.op!=='trim'),e]);return}
+  pushEdit(e)});
+$('#smoothS').oninput=()=>$('#smoothV').textContent=(+$('#smoothS').value).toFixed(2);
+$('#autoS').oninput=()=>$('#autoV').textContent=(+$('#autoS').value).toFixed(2);
+$('#autoBtn').onclick=()=>setEdits([{op:'auto_clean',strength:+$('#autoS').value},...S.edits.filter(e=>e.op!=='auto_clean')]);
+$('#loopBtn').onclick=()=>setEdits([...S.edits.filter(e=>e.op!=='loop'),{op:'loop',frames:+$('#loopN').value}]);
+$('#clearSel').onclick=()=>{S.sel=null;updSel();drawTL()};
+function updSel(){$('#selInfo').innerHTML=S.sel?`Frames <b>${S.sel[0]}–${S.sel[1]}</b> &nbsp;(${S.sel[1]-S.sel[0]+1} f, ${((S.sel[1]-S.sel[0]+1)/S.orig.fps).toFixed(2)} s)`:'<span class="hint">Drag on the timeline to select frames</span>'}
+
+function curIssues(){const c=S.clean||S.orig,o=(S.trim||[0])[0];return (c.issues||[]).map(s=>({...s,start:s.start+o,end:s.end+o}))}
+function renderIssues(){
+  const L=curIssues();$('#issCount').textContent=L.length?`(${L.length})`:'';
+  $('#issues').innerHTML=L.length?L.map((s,i)=>`<div class="item" data-i="${i}"><span class="dot" style="background:${ISS[s.type][1]}"></span><span class="t">${ISS[s.type][0]} <span class="hint">${s.start}–${s.end}</span></span><button class="btn sm" data-fix="${i}">Fix</button></div>`).join('')
+    :'<span class="hint">No problems detected 🎉</span>';
+  $$('#issues .item').forEach(el=>el.onclick=ev=>{const s=L[+el.dataset.i];
+    if(ev.target.dataset.fix!=null){const a=Math.max(0,s.start-1),b=Math.min(T()-1,s.end+1),op=ISS[s.type][2];
+      const e={op,start:a,end:b};if(op==='smooth')e.strength=0.6;if(op==='relax_hands')e.side='both';pushEdit(e);return}
+    S.sel=[Math.max(0,s.start-2),Math.min(T()-1,s.end+2)];S.f=s.start;updSel();drawTL();draw3d()});
+}
+$('#fixAll').onclick=()=>{const L=curIssues().filter(s=>s.type==='spike');if(!L.length)return toast('No spikes left');
+  setEdits([...S.edits,...L.map(s=>({op:'interpolate',start:Math.max(0,s.start-1),end:Math.min(T()-1,s.end+1)}))])};
+
+// ------------------------------------------------------------------ export
+$('#expBtn').onclick=async()=>{
+  const targets=[$('#tUE4').checked&&'ue4',$('#tUE5').checked&&'ue5'].filter(Boolean);if(!targets.length)return toast('Pick UE4 and/or UE5');
+  $('#expBtn').disabled=true;$('#expOut').innerHTML='<span class="hint">Exporting…</span>';
+  try{const r=await post(`/api/jobs/${S.id}/export`,{edits:S.edits,targets,root_motion:$('#rootMotion').checked,name:$('#expName').value});
+    $('#expOut').innerHTML=`<p class="hint">${r.frames} frames exported:</p>`+r.files.map(f=>`<a href="/files/${S.id}/${f}?dl=1">⬇ ${f}</a>`).join('');toast('Export done')}
+  catch(e){$('#expOut').innerHTML='';toast('Export failed: '+e.message)}finally{$('#expBtn').disabled=false}};
+
+// ------------------------------------------------------------------ pose helpers
+const J=n=>S.orig.joints.indexOf(n);
+function poseAt(f){ // cleaned pose for original frame f (null if trimmed away)
+  const c=S.clean;if(!c)return null;const i=f-(S.trim?S.trim[0]:0);if(i<0||i>=c.frames)return null;
+  return {P:c.corrected[i],hands:c.hands?{left:c.hands.left&&c.hands.left[i],right:c.hands.right&&c.hands.right[i],
+    cl:c.hands.conf_left&&c.hands.conf_left[i],cr:c.hands.conf_right&&c.hands.conf_right[i]}:null,
+    contacts:{left:c.contacts.left&&c.contacts.left[i],right:c.contacts.right&&c.contacts.right[i]}}}
+
+// ------------------------------------------------------------------ 3D view
+const cv=$('#c3d'),g=cv.getContext('2d');
+function fitCam(){const P=S.orig.corrected;let n=0,x=0,z=0;for(const p of P){x+=p[19][0];z+=p[19][2];n++}cam.cx=x/n;cam.cz=z/n;cam.cy=0.9}
+function proj(p){const cy=Math.cos(cam.yaw),sy=Math.sin(cam.yaw),cp=Math.cos(cam.pitch),sp=Math.sin(cam.pitch);
+  let x=p[0]-cam.cx,y=p[1]-cam.cy,z=p[2]-cam.cz;let X=cy*x-sy*z,Z=sy*x+cy*z;let Y=cp*y-sp*Z;Z=sp*y+cp*Z;
+  const d=cam.dist-Z;if(d<0.1)return null;const s=Math.min(cv.width,cv.height)*1.15/d;return [cv.width/2+X*s,cv.height*0.55-Y*s,d]}
+function line(a,b,col,w){const A=proj(a),B=proj(b);if(!A||!B)return;g.strokeStyle=col;g.lineWidth=w;g.beginPath();g.moveTo(A[0],A[1]);g.lineTo(B[0],B[1]);g.stroke()}
+function boneCol(a,b){const s=a+b;return s.includes('left')?'#ff9a3c':s.includes('right')?'#4f8cff':'#d9e2ec'}
+function drawSkel(P,alpha,w){g.globalAlpha=alpha;for(const [a,b] of S.orig.bones)line(P[J(a)],P[J(b)],boneCol(a,b),w);
+  for(const p of P){const A=proj(p);if(A){g.fillStyle='#e6edf4';g.beginPath();g.arc(A[0],A[1],w*0.9,0,7);g.fill()}}g.globalAlpha=1}
+function drawHand(H,conf,col){if(!H)return;for(const ch of FING)for(let k=1;k<ch.length;k++){
+  const c=conf?Math.min(conf[ch[k]],conf[ch[k-1]]):1;g.globalAlpha=0.35+0.65*Math.min(1,c/0.5);line(H[ch[k-1]],H[ch[k]],col,1.6)}g.globalAlpha=1}
+function draw3d(){
+  const r=cv.getBoundingClientRect(),dpr=devicePixelRatio||1;if(cv.width!==Math.round(r.width*dpr)||cv.height!==Math.round(r.height*dpr)){cv.width=Math.round(r.width*dpr);cv.height=Math.round(r.height*dpr)}
+  g.clearRect(0,0,cv.width,cv.height);if(!S.orig)return;
+  const f=Math.max(0,Math.min(T()-1,S.f)),pose=poseAt(f),orig=S.orig.corrected[f];
+  if(opt.follow){const h=(pose?pose.P:orig)[19];cam.cx+=(h[0]-cam.cx)*0.25;cam.cz+=(h[2]-cam.cz)*0.25}
+  g.strokeStyle='#1c2836';g.lineWidth=1;const gx=Math.round(cam.cx),gz=Math.round(cam.cz);
+  for(let i=-4;i<=4;i++){line([gx+i*0.5,0,gz-2],[gx+i*0.5,0,gz+2],'#1c2836',1);line([gx-2,0,gz+i*0.5],[gx+2,0,gz+i*0.5],'#1c2836',1)}
+  if(opt.ghost||!pose)drawSkel(orig,pose?0.22:0.55,2);
+  if(pose){
+    for(const s of ['left','right'])if(pose.contacts[s]){const ft=pose.P[J(s+'_heel')],A=proj([ft[0],0,ft[2]]);if(A){g.fillStyle='rgba(90,208,138,.35)';g.beginPath();g.ellipse(A[0],A[1],14,5,0,0,7);g.fill()}}
+    drawSkel(pose.P,1,3);
+    if(pose.hands){drawHand(pose.hands.left,pose.hands.cl,'#ffc48a');drawHand(pose.hands.right,pose.hands.cr,'#9cc0ff')}
+  }
+  const hc=S.clean&&S.clean.hands;
+  $('#hud').innerHTML=`<b>${pose?'Cleaned':'Trimmed out'}</b> · frame ${f} · ${(f/S.orig.fps).toFixed(2)} s`+(opt.ghost&&pose?' · <span style="opacity:.6">ghost = original</span>':'')
+    +(hc?` · hands: ${hc.left?'L':'–'}${hc.right?'R':'–'}`:' · hands: relaxed (no tracking data)');
+  $('#frInfo').textContent=`${f} / ${T()-1}   ${(f/S.orig.fps).toFixed(2)} s`+(S.trim?`   out: ${S.trim[1]-S.trim[0]+1} f`:'');
+}
+let drag=null;
+cv.onpointerdown=e=>{drag=[e.clientX,e.clientY];cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing'};
+cv.onpointermove=e=>{if(!drag)return;cam.yaw+=(e.clientX-drag[0])*0.008;cam.pitch=Math.max(-1.2,Math.min(1.4,cam.pitch+(e.clientY-drag[1])*0.006));drag=[e.clientX,e.clientY];draw3d()};
+cv.onpointerup=()=>{drag=null;cv.style.cursor='grab'};
+cv.onwheel=e=>{e.preventDefault();cam.dist=Math.max(1.2,Math.min(14,cam.dist*(e.deltaY>0?1.1:0.9)));draw3d()};
+function tog(id,k){$(id).onclick=()=>{opt[k]=!opt[k];$(id).classList.toggle('on',opt[k]);draw3d()}}
+tog('#optGhost','ghost');tog('#optFollow','follow');
+$('#optFront').onclick=()=>{cam.yaw=0;cam.pitch=0.1;draw3d()};$('#optSide').onclick=()=>{cam.yaw=Math.PI/2;cam.pitch=0.1;draw3d()};
+
+// ------------------------------------------------------------------ timeline
+const tl=$('#tl'),tg=tl.getContext('2d');const PADL=118,LANE=11;
+const LANES=[['spike'],['jitter'],['low_quality'],['foot_skate'],['hand_lost'],['contact','left'],['contact','right'],['edits']];
+function fx(f){return PADL+(f+0.5)/T()*(tl.width/(devicePixelRatio||1)-PADL-8)}
+function xf(x){return Math.round((x-PADL)/(tl.width/(devicePixelRatio||1)-PADL-8)*T()-0.5)}
+function speed(P,j,fps){const out=new Float32Array(P.length);for(let i=1;i<P.length;i++){const a=P[i][j],b=P[i-1][j];out[i]=Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2])*fps}out[0]=out[1]||0;return out}
+function drawTL(){
+  if(!S.orig)return;const dpr=devicePixelRatio||1,W=tl.getBoundingClientRect().width,H=170;
+  if(tl.width!==Math.round(W*dpr)){tl.width=Math.round(W*dpr);tl.height=H*dpr}tg.setTransform(dpr,0,0,dpr,0,0);
+  tg.fillStyle='#0d1219';tg.fillRect(0,0,W,H);const n=T(),cw=Math.max(1,(W-PADL-8)/n);
+  // ruler
+  tg.fillStyle='#8b9aab';tg.font='10px system-ui';const step=n>600?60:n>240?30:n>90?10:5;
+  for(let f=0;f<n;f+=step){const x=fx(f);tg.fillRect(x,0,1,5);tg.fillText(f,x+2,10)}
+  let y=16;const sev=(S.clean||S.orig).severity||{},o=(S.trim||[0])[0];
+  for(const ln of LANES){
+    tg.fillStyle='#8b9aab';tg.fillText(ln[0]==='contact'?`contact ${ln[1][0].toUpperCase()}`:ln[0]==='edits'?'edits':ISS[ln[0]][0],6,y+9);
+    tg.fillStyle='#121a24';tg.fillRect(PADL,y,W-PADL-8,LANE);
+    if(ISS[ln[0]]){const a=sev[ln[0]]||[];tg.fillStyle=ISS[ln[0]][1];for(let i=0;i<a.length;i++)if(a[i]>0.05){tg.globalAlpha=0.25+0.75*a[i];tg.fillRect(fx(i+o)-cw/2,y,cw+0.5,LANE)}tg.globalAlpha=1}
+    else if(ln[0]==='contact'){const c=(S.clean||S.orig).contacts[ln[1]]||[];tg.fillStyle=ln[1]==='left'?'#ff9a3c':'#4f8cff';for(let i=0;i<c.length;i++)if(c[i])tg.fillRect(fx(i+o)-cw/2,y+2,cw+0.5,LANE-4)}
+    else{S.edits.forEach((e,i)=>{if(e.start==null)return;tg.fillStyle=OPC[e.op];tg.globalAlpha=i===S.selEdit?1:0.7;tg.fillRect(fx(e.start)-cw/2,y,fx(e.end)-fx(e.start)+cw,LANE)});tg.globalAlpha=1}
+    y+=LANE+3}
+  // speed curve: original (dim) vs cleaned
+  const cy0=y+4,ch=H-cy0-4,j=J(S.curve),so=speed(S.orig.corrected,j,S.orig.fps),sc=S.clean?speed(S.clean.corrected,j,S.orig.fps):null;
+  let mx=0.5;for(const v of so)mx=Math.max(mx,v);tg.fillStyle='#8b9aab';tg.fillText(`${S.curve} speed`,6,cy0+10);tg.fillText(`${mx.toFixed(1)} m/s`,6,cy0+22);
+  tg.fillStyle='#121a24';tg.fillRect(PADL,cy0,W-PADL-8,ch);
+  const plot=(arr,off,col,w)=>{tg.strokeStyle=col;tg.lineWidth=w;tg.beginPath();arr.forEach((v,i)=>{const X=fx(i+off),Y=cy0+ch-Math.min(1,v/mx)*(ch-2);i?tg.lineTo(X,Y):tg.moveTo(X,Y)});tg.stroke()};
+  plot(so,0,'#3a4b5e',1.2);if(sc)plot(sc,o,'#2ed3c6',1.4);
+  // trimmed regions
+  if(S.trim){tg.fillStyle='rgba(0,0,0,.55)';const a=fx(S.trim[0])-cw/2,b=fx(S.trim[1])+cw/2;tg.fillRect(PADL,14,a-PADL,H);tg.fillRect(b,14,W-8-b,H)}
+  if(S.sel){tg.fillStyle='rgba(46,211,198,.16)';tg.strokeStyle='#2ed3c6';tg.lineWidth=1;const a=fx(S.sel[0])-cw/2,b=fx(S.sel[1])+cw/2;tg.fillRect(a,0,b-a,H);tg.strokeRect(a+.5,.5,b-a-1,H-1)}
+  tg.fillStyle='#fff';tg.fillRect(fx(S.f)-0.75,0,1.5,H);
+}
+let tdrag=null;
+tl.onpointerdown=e=>{const r=tl.getBoundingClientRect(),f=Math.max(0,Math.min(T()-1,xf(e.clientX-r.left)));tdrag=f;S.f=f;S.sel=null;S.selEdit=-1;tl.setPointerCapture(e.pointerId);
+  // click on an edit block selects it
+  const yEd=16+(LANES.length-1)*(LANE+3),yy=e.clientY-r.top;if(yy>=yEd&&yy<=yEd+LANE){const i=S.edits.findIndex(x=>x.start!=null&&f>=x.start&&f<=x.end);if(i>=0){S.selEdit=i;S.sel=[S.edits[i].start,S.edits[i].end]}}
+  renderEdits();updSel();drawTL();draw3d()};
+tl.onpointermove=e=>{if(tdrag==null)return;const r=tl.getBoundingClientRect(),f=Math.max(0,Math.min(T()-1,xf(e.clientX-r.left)));S.f=f;if(f!==tdrag)S.sel=[Math.min(f,tdrag),Math.max(f,tdrag)];updSel();drawTL();draw3d()};
+tl.onpointerup=()=>{tdrag=null};
+$('#curveJ').onchange=()=>{S.curve=$('#curveJ').value;drawTL()};
+
+// ------------------------------------------------------------------ playback
+let last=0;
+function tick(t){if(S.play&&S.orig){const dt=(t-last)/1000*S.orig.fps*(+$('#speed').value);if(dt>=1){last=t;let a=0,b=T()-1;
+  if(S.sel){a=S.sel[0];b=S.sel[1]}else if(S.trim){a=S.trim[0];b=S.trim[1]}
+  S.f+=Math.floor(dt);if(S.f>b){if($('#bLoop').classList.contains('on'))S.f=a;else{S.f=b;setPlay(false)}}if(S.f<a)S.f=a;drawTL();draw3d()}}else last=t;requestAnimationFrame(tick)}
+requestAnimationFrame(tick);
+function setPlay(p){S.play=p;$('#bPlay').textContent=p?'⏸':'▶'}
+$('#bPlay').onclick=()=>setPlay(!S.play);$('#bLoop').onclick=()=>$('#bLoop').classList.toggle('on');
+const step=d=>{S.f=Math.max(0,Math.min(T()-1,S.f+d));drawTL();draw3d()};
+$('#bPrev').onclick=()=>step(-1);$('#bNext').onclick=()=>step(1);$('#bStart').onclick=()=>{S.f=S.trim?S.trim[0]:0;drawTL();draw3d()};
+document.onkeydown=e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||!S.orig)return;
+  if(e.code==='Space'){e.preventDefault();setPlay(!S.play)}else if(e.key==='ArrowLeft')step(e.shiftKey?-10:-1);else if(e.key==='ArrowRight')step(e.shiftKey?10:1);
+  else if(e.key==='Home')$('#bStart').onclick();
+  else if(e.key==='i'||e.key==='I'){S.sel=[S.f,S.sel?Math.max(S.f,S.sel[1]):T()-1];updSel();drawTL()}
+  else if(e.key==='o'||e.key==='O'){S.sel=[S.sel?Math.min(S.f,S.sel[0]):0,S.f];updSel();drawTL()}
+  else if((e.key==='Delete'||e.key==='Backspace')&&S.selEdit>=0){setEdits(S.edits.filter((_,k)=>k!==S.selEdit));S.selEdit=-1}
+  else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();$('#undo').onclick()}
+  else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();$('#redo').onclick()}};
+window.onresize=()=>{drawTL();draw3d()};
+if(location.hash.length>1)load(location.hash.slice(1));else openPicker();
+</script>
+</body>
+</html>
